@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Suivi apprentissage Civ6</title>
+<style>
+:root{color-scheme:dark;--bg:#10151b;--panel:#19222c;--line:#334250;--text:#e9f0f5;--muted:#a8bac8;--accent:#67d2b2;--warn:#f6c76a;--bad:#ff8585}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,sans-serif}header{padding:22px max(20px,calc((100vw - 1200px)/2));border-bottom:1px solid var(--line);background:#131b23}main{max-width:1200px;margin:24px auto;padding:0 20px}h1{font-size:24px;margin:0}h2{font-size:18px;margin:0 0 14px}.sub,.muted{color:var(--muted)}.row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}.grid>*{min-width:0}.panel{min-width:0;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin:16px 0;overflow:hidden}select,button{font:inherit;color:var(--text);background:#25313c;border:1px solid #536371;border-radius:7px;padding:8px 11px}button{cursor:pointer}button:hover{border-color:var(--accent)}canvas{display:block;width:100%;height:220px;background:#111920;border-radius:8px}.badge{display:inline-block;border-radius:20px;background:#36434e;padding:3px 10px;font-size:13px}.badge.diag{color:var(--warn);background:#493d25}.badge.train{color:var(--accent);background:#1f423c}.badge.error{color:var(--bad);background:#492d33}.cards{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0;min-width:0;max-width:100%}.card{background:#111920;border:1px solid var(--line);border-radius:8px;padding:9px 12px;min-width:0;max-width:100%;overflow-wrap:anywhere}.card b{display:block;font-size:19px;overflow-wrap:anywhere}.error{color:var(--bad)}#task-context{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0;min-width:0}#task-context .muted{flex-basis:100%}#replay-canvas{height:380px}#decision{min-width:0;max-width:100%}.small{font-size:13px}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:7px;border-bottom:1px solid var(--line)}
+</style></head>
+<body><header><h1>Projet et apprentissage Civ6</h1><div class="sub">Livraisons du projet et mesures d’apprentissage — deux suivis distincts</div></header>
+<main id="project"><section class="panel"><h2>Ce qui reste avant le premier entraînement</h2><div id="project-status" class="muted">Chargement du bilan de livraison…</div><p id="project-next"></p><div id="project-deliveries" class="grid"></div><details><summary>Méthode et sources du bilan</summary><div id="project-method" class="small muted"></div></details></section></main>
+<main><section class="panel"><div class="row"><label for="runs">Run :</label><select id="runs"><option value="">Chargement…</option></select><span id="badge" class="badge">Aucune donnée</span><span id="updated" class="muted small"></span></div><div id="summary" class="muted">En attente des fichiers de run.</div><div id="run-overview" class="cards"></div><div id="task-context" class="muted small"></div><div id="run-health" class="muted small"></div><div id="errors" class="error"></div><div id="limitations" class="muted small"></div></section>
+<section class="grid"><div class="panel"><h2>Récompense / victoire en évaluation</h2><canvas id="quality"></canvas><div id="quality-legend" class="muted small">Séries affichées uniquement si présentes dans metrics.jsonl.</div></div><div class="panel"><h2>Perte, entropie et KL</h2><canvas id="learning"></canvas><div id="learning-legend" class="muted small">Les séries utilisent leur échelle propre.</div></div></section>
+<section class="panel"><h2>Décisions du modèle · diagnostic</h2><div id="decision-diagnostics" class="cards"></div><canvas id="decision-entropy"></canvas><div id="decision-entropy-legend" class="muted small"></div><div id="coverage-note" class="muted small">La couverture décrit les métriques publiées, pas une partie complète ni un niveau de jeu.</div></section>
+<section class="panel"><h2>Évaluations publiées</h2><div id="evaluation-table" class="small"></div><div class="muted small">Récompense et réussite décrivent l’objectif de la tâche de diagnostic, pas une victoire dans Civilization VI. L’étape affichée est l’index enregistré, pas une progression chronologique.</div></section>
+<section class="panel"><h2>Temps mesurés</h2><div id="timings" class="cards"></div><div id="throughput" class="muted"></div><div class="muted small">L’aller-retour distant inclut l’inférence et le transport ; ce n’est pas une mesure du réseau seul.</div><h2 style="margin-top:18px">Mesures de politique et d’optimisation</h2><div id="optimization" class="cards"></div></section>
+<section class="panel"><div class="row"><h2 style="margin:0">Replay publié</h2><label for="replay-player">Perspective :</label><select id="replay-player" disabled><option value="">Aucun replay</option></select><button id="prev" disabled>Précédent</button><span id="replay-index" class="muted">Aucun replay</span><button id="next" disabled>Suivant</button></div><div id="replay-note" class="muted small">La carte n’utilise que l’observation publiée dans le replay.</div><canvas id="replay-canvas"></canvas><div id="decision" class="cards"></div></section>
+<p class="muted small">Le statut vient du manifeste. L’ancienneté des fichiers n’indique pas à elle seule que le processus est arrêté.</p></main>
+<script>
+const $=s=>document.querySelector(s);let current='',currentManifest=null,metrics=[],replayCount=0,replayAt=0,replaySource='',replayRequest=0;
+async function get(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}
+async function refreshProject(){
+  try{
+    const p=await get('/api/project');
+    $('#project-status').textContent=`Bilan publié le ${new Date(p.reviewed_at).toLocaleString('fr-FR')} · ${p.execution_status} ${p.readiness}`;
+    $('#project-next').textContent=p.next_delivery;
+    $('#project-deliveries').innerHTML=p.deliveries.map(d=>`<article class="card"><h2>${escapeHtml(d.title)}</h2><span class="badge diag">${escapeHtml(d.status)}</span><p>${escapeHtml(d.remaining)}</p><details><summary>Acquis et résultat attendu</summary><p>Acquis : ${escapeHtml(d.existing)}</p><p>Terminé lorsque : ${escapeHtml(d.acceptance)}</p></details></article>`).join('');
+    $('#project-method').textContent=[p.measured_training,...p.method,'Sources : '+p.evidence.join(' ; ')].join('\n\n');
+    $('#project-method').style.whiteSpace='pre-line';
+  }catch(e){
+    $('#project-status').textContent='Bilan de livraison indisponible : '+e.message;
+    $('#project-next').textContent='';$('#project-deliveries').textContent='';$('#project-method').textContent='';
+  }
+}
+refreshProject();setInterval(refreshProject,30000);
+function nice(v){return Number.isFinite(Number(v))?Number(v).toLocaleString('fr-FR',{maximumFractionDigits:4}):'—'}
+function setCanvasSize(c){const dpr=window.devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;c.width=w*dpr;c.height=h*dpr;const x=c.getContext('2d');x.scale(dpr,dpr);return{x,w,h}}
+function plot(id,names,colors,legendId,stage=null){
+  const c=$(id),{x,w,h}=setCanvasSize(c);x.clearRect(0,0,w,h);x.strokeStyle='#334250';x.fillStyle='#a8bac8';x.font='12px system-ui';
+  const pad={l:42,r:12,t:22,b:30},legend=[];for(let i=0;i<4;i++){const y=pad.t+(h-pad.t-pad.b)*i/3;x.beginPath();x.moveTo(pad.l,y);x.lineTo(w-pad.r,y);x.stroke()}
+  const keys=names.filter(n=>seriesRows(n,stage).some(r=>Object.hasOwn(r.metrics,n))),legendHost=legendId?$(legendId):null;
+  if(!keys.length){x.fillText('Aucune série disponible',pad.l,Math.round(h/2));if(legendHost)legendHost.textContent='Aucune série disponible.';return}
+  const times=metrics.map(r=>r.wall_seconds).filter(Number.isFinite),minTime=Math.min(...times),maxTime=Math.max(...times);
+  keys.forEach((key,j)=>{
+    const rows=seriesRows(key,stage).filter(r=>Number.isFinite(r.wall_seconds)&&Number.isFinite(r.metrics[key]));if(!rows.length)return;
+    const vals=rows.map(r=>r.metrics[key]),lo=Math.min(...vals),hi=Math.max(...vals),latest=vals.at(-1),range=hi-lo||1;
+    x.strokeStyle=colors[j%colors.length];x.lineWidth=2;x.beginPath();let started=false;
+    rows.forEach(r=>{const px=pad.l+(w-pad.l-pad.r)*(maxTime===minTime?.5:(r.wall_seconds-minTime)/(maxTime-minTime)),py=pad.t+(h-pad.t-pad.b)*(1-(r.metrics[key]-lo)/range);if(!started){x.moveTo(px,py);started=true}else x.lineTo(px,py)});
+    x.stroke();legend.push(`<span style="color:${colors[j%colors.length]}">${key}</span>: min ${nice(lo)}, max ${nice(hi)}, dernier ${nice(latest)}`)
+  });
+  x.fillStyle='#a8bac8';x.fillText('Temps écoulé (s)',pad.l,h-7);
+  if(legendHost)legendHost.innerHTML=legend.join(' · ')
+}
+function seriesRows(key,stage=null){
+  if(stage)return metrics.filter(r=>r.stage===stage);
+  if(key==='eval_win_rate')return metrics.filter(r=>r.stage.startsWith('evaluation_'));
+  if(key==='reward')return metrics.filter(r=>!r.stage.startsWith('evaluation_')&&r.stage!=='ppo_update');
+  if(['loss','policy_loss','value_loss','separate_value_loss','separate_grad_norm','privileged_value_loss','privileged_grad_norm','gae_loss','entropy','kl','grad_norm','gradient_norm'].includes(key)){
+    if(['privileged_value_loss','privileged_grad_norm'].includes(key)&&currentManifest?.critic_mode!=='privileged_diagnostic')return [];
+    return metrics.filter(r=>r.stage==='ppo_update')
+  }
+  return metrics
+}
+function draw(){plot('#quality',['reward','eval_win_rate'],['#67d2b2','#f6c76a'],'#quality-legend');plot('#learning',['loss','separate_value_loss','privileged_value_loss','entropy','kl'],['#84b8ff','#67d2b2','#54c6d8','#d69cff','#ff9d73'],'#learning-legend');plot('#decision-entropy',['entropy'],['#f6c76a'],'#decision-entropy-legend','transition')}
+function badge(m){let b=$('#badge');if(!m){b.className='badge';b.textContent='Aucun manifeste';return}if(m.error&&m.schema!=='civ6rl.learning_run.v1'){b.className='badge';b.textContent='Format inconnu';return}if(m.error||m.close_error||m.status==='failed'||m.status==='error'){b.className='badge error';b.textContent='Run avec erreur'}else if(m.mode==='diagnostic'&&m.model_status==='diagnostic_updated'){b.className='badge diag';b.textContent='Diagnostic mis à jour · entraînement non éligible'}else if(m.mode==='diagnostic'){b.className='badge diag';b.textContent='Diagnostic · entraînement non éligible'}else if(m.mode==='training'&&m.training_eligible){b.className='badge train';b.textContent='Entraînement éligible'}else{b.className='badge';b.textContent=m.mode==='training'?'Entraînement · éligibilité non confirmée':'Mode inconnu'} }
+async function selectRun(){
+  const requested=$('#runs').value;if(!requested)return;
+  if(requested!==current){current=requested;replaySource='';replayAt=0;replayRequest++;clearReplay('Chargement des perspectives…')}
+  try{
+    const d=await get('/api/run?id='+encodeURIComponent(requested));if(current!==requested)return;
+    metrics=d.metrics||[];currentManifest=d.manifest;badge(d.manifest);
+    $('#summary').textContent=d.manifest?`${d.manifest.run_id||current} · ${d.manifest.status} · ${metrics.length} échantillons${d.manifest.started_at?' · début '+d.manifest.started_at:''}${d.last_metrics_write_utc?' · dernière écriture '+d.last_metrics_write_utc:''}`:'Manifeste absent : données d’entraînement indisponibles.';
+    const errors=[...(d.errors||[]),...(d.replay_sources?.errors||[]),...(d.manifest?.error?[`Erreur : ${d.manifest.error}`]:[]),...(d.manifest?.close_error?[`Erreur fermeture : ${d.manifest.close_error}`]:[])],limitations=d.manifest?.limitations||[];
+    $('#errors').textContent=errors.length?'Erreurs : '+errors.join(' · '):'';
+    $('#limitations').textContent=limitations.length?'Limites : '+limitations.join(' · '):'';
+    updateRunOverview(d.manifest,metrics);renderEvaluationTable(metrics);updateRunHealth(d.manifest);showDecisionDiagnostics(d.diagnostic_summary,metrics);
+    if(d.no_data)$('#summary').textContent+=' · Aucune mesure disponible.';
+    updateReplaySources(d.replay_sources);draw();showTimings();await loadReplay(replayAt)
+  }catch(e){if(current===requested){$('#errors').textContent='Erreur de lecture : '+e.message;replayRequest++;clearReplay('Replay indisponible : erreur de lecture du run.')}}
+}
+async function refresh(){try{const d=await get('/api/runs');const select=$('#runs'),previous=select.value;select.innerHTML='';if(d.no_data){select.add(new Option('Aucun run détecté',''));current='';currentManifest=null;metrics=[];badge(null);$('#summary').textContent='Aucun entraînement ni diagnostic enregistré.';$('#errors').textContent='';$('#limitations').textContent='';$('#run-overview').innerHTML='';$('#task-context').textContent='';$('#run-health').textContent='';$('#evaluation-table').textContent='Aucune évaluation publiée pour ce run.';$('#optimization').textContent='Aucune métrique GAE/PPO/gradient publiée pour ce run.';showDecisionDiagnostics(null);replaySource='';replayRequest++;updateReplaySources(null);draw();showTimings();clearReplay('Aucun replay publié pour ce run.');return}for(const r of d.runs)select.add(new Option(`${r.id} · ${r.manifest?.status||'manifest absent'}`,r.id));if(d.runs.some(r=>r.id===previous))select.value=previous;else {const requested=new URLSearchParams(window.location.search).get('run');if(requested&&d.runs.some(r=>r.id===requested))select.value=requested;else select.selectedIndex=0;}await selectRun();$('#updated').textContent='Actualisé '+new Date().toLocaleTimeString('fr-FR')}catch(e){$('#errors').textContent='Serveur de suivi indisponible : '+e.message;replayRequest++;clearReplay('Replay indisponible : serveur de suivi inaccessible.')}}
+function clearReplay(message){
+  replayCount=0;$('#replay-index').textContent='Aucun replay affiché';$('#replay-note').textContent=message;
+  $('#decision').textContent='';$('#prev').disabled=true;$('#next').disabled=true;drawReplay(null)
+}
+function updateReplaySources(sources){
+  const select=$('#replay-player'),available=[];select.innerHTML='';
+  for(const player of sources?.players||[])if(Number.isInteger(player)&&player>=0&&player<=63)available.push(['p:'+player,'Joueur '+player]);
+  if(sources?.legacy===true)available.push(['legacy','Historique legacy (fichier unique)']);
+  for(const [value,label] of available)select.add(new Option(label,value));
+  if(!replaySource){replaySource=available[0]?.[0]||'';replayAt=0}
+  if(replaySource&&!available.some(([value])=>value===replaySource)){
+    const label=replaySource==='legacy'?'Historique legacy absent':'Joueur '+replaySource.slice(2)+' · fichier absent';
+    const missing=new Option(label,replaySource);missing.disabled=true;select.add(missing)
+  }
+  if(!select.options.length)select.add(new Option('Aucun replay',''));
+  select.value=replaySource;select.disabled=!available.length;
+}
+async function loadReplay(index){
+  const run=current,source=replaySource,request=++replayRequest;
+  if(!source){clearReplay('Aucun replay publié pour ce run.');return}
+  const player=source==='legacy'?'':'&player='+encodeURIComponent(source.slice(2));
+  try{
+    const d=await get('/api/replay?id='+encodeURIComponent(run)+'&index='+index+player);
+    if(request!==replayRequest||run!==current||source!==replaySource)return;
+    replayCount=d.count;replayAt=d.index;$('#prev').disabled=replayAt<=0;$('#next').disabled=replayAt+1>=replayCount;
+    $('#replay-index').textContent=`${replayAt+1} / ${replayCount} · tour ${d.replay.turn??'—'} · joueur ${d.replay.player_id??'—'}`;
+    const proposal=currentManifest?.metric_scope==='recorded_inference'||currentManifest?.run_id?.includes('native-replay');
+    const label=proposal?'Proposition d’action (inférence enregistrée, non exécutée)':'Décision enregistrée';
+    $('#decision').innerHTML='<div class="card">'+label+'<b>'+escapeHtml(JSON.stringify(d.replay.action??'—'))+'</b></div>';
+    let note=d.data_error?'Certaines lignes de replay sont malformées.':source==='legacy'?'Fichier historique legacy ; aucune fusion des perspectives.':'Observation du joueur sélectionné, avant sa décision.';
+    if(d.tail_incomplete)note+=' La dernière ligne est encore en cours d’écriture.';
+    const replayHash=d.replay.scenario_sha256,contextHash=currentManifest?.task_context?.scenario_sha256;
+    if(replayHash&&contextHash&&replayHash!==contextHash)note+=' SHA-256 différent du scénario déclaré dans le manifeste.';
+    else if(replayHash)note+=' SHA-256 scénario replay : '+replayHash+'.';
+    $('#replay-note').textContent=note;drawReplay(d.replay.observation)
+  }catch(e){
+    if(request!==replayRequest||run!==current||source!==replaySource)return;
+    const message=String(e?.message||e);
+    clearReplay(message==='HTTP 404'?'Aucun replay publié pour cette perspective.':'Erreur de chargement du replay : '+message)
+  }
+}
+function showDecisionDiagnostics(summary,rows=[]){
+  const host=$('#decision-diagnostics');host.textContent='';
+  if(summary?.scope!=='published_transition_metrics'||!summary.decisions){host.textContent='Aucune décision avec identité de joueur publiée.';return}
+  const counts=summary.players.map(pid=>'J'+pid+' : '+summary.counts[String(pid)]).join(' · ');
+  const cards=[['Décisions publiées',summary.decisions],['Joueurs ayant agi',summary.players.length],['Décisions par joueur',counts]];
+  if(summary.handoff_boundaries>0)cards.push(['Passations de joueur publiées',summary.handoffs],['Frontières renseignées',summary.handoff_boundaries+' / '+summary.decisions]);
+  const exploration=rows.filter(r=>r.stage==='transition'&&Number.isInteger(r.metrics?.published_candidate_count)&&Number.isInteger(r.metrics?.selected_world_plot_click));
+  if(exploration.length){
+    const clicks=exploration.reduce((sum,r)=>sum+r.metrics.selected_world_plot_click,0),last=exploration.at(-1).metrics;
+    cards.push(['Clics carte · décisions renseignées',clicks+' / '+exploration.length],['Candidats du dernier menu',last.published_candidate_count],['Dont destinations de carte',last.published_world_plot_candidate_count]);
+    for(const [key,label] of [['selected_found_city','Choix de fondation'],['selected_production','Choix de production'],['selected_end_turn','Choix de fin de tour']]){
+      const known=exploration.filter(r=>Number.isInteger(r.metrics[key]));
+      if(known.length)cards.push([label,known.reduce((sum,r)=>sum+r.metrics[key],0)+' / '+known.length]);
+    }
+  }
+  for(const [label,value] of cards)host.insertAdjacentHTML('beforeend',`<div class="card">${label}<b>${escapeHtml(value)}</b></div>`)
+}
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function updateRunOverview(m, rows){
+  const host=$('#run-overview');host.innerHTML='';showTaskContext(m?.task_context);if(!m)return;
+  const live=rows.filter(r=>r.stage==='live_native_untrained_choice');
+  const requested=m.requested_steps??m.steps_requested,executed=m.executed_steps??m.steps_executed;
+  const evaluationCount=rows.filter(r=>r.stage.startsWith('evaluation_')).length;
+  const cards=[['Transitions observées',executed],
+    ['Updates PPO réalisées',m.executed_updates],['Épisodes terminés',m.completed_episodes],
+    ['Évaluations publiées',evaluationCount],['Échantillons de métriques',rows.length],
+    ['Durée écoulée (s)',m.elapsed_seconds],['Plafond temps (s)',m.time_limit_seconds??m.max_seconds]];
+  if(m.limits_are_caps===true){
+    cards.splice(1,0,['Plafond transitions',m.step_limit??requested]);
+    cards.splice(3,0,['Plafond updates PPO',m.update_limit??m.requested_updates]);
+    cards.splice(5,0,['Plafond épisodes',m.episode_limit??m.requested_episodes]);
+  }else if(Number.isFinite(requested))cards.splice(1,0,['Étapes annoncées (sens non précisé)',requested]);
+  for(const [label,value] of cards){if(Number.isFinite(value))host.insertAdjacentHTML('beforeend',`<div class="card">${label}<b>${nice(value)}</b></div>`);else if(label==='Transitions observées'&&live.length)host.insertAdjacentHTML('beforeend',`<div class="card">Décisions live enregistrées<b>${live.length}</b></div>`)}
+  if(m.stop_reason)host.insertAdjacentHTML('beforeend',`<div class="card">Motif d’arrêt<b>${escapeHtml(m.stop_reason)}</b></div>`);
+  const model=m.model_status==='untrained'?'Modèle non entraîné':m.model_status==='trained'?'Modèle entraîné':m.model_status==='diagnostic_updated'?'Modèle mis à jour en diagnostic (non qualifié)':(m.mode==='diagnostic'?'Mode diagnostic':'Modèle non précisé');
+  const eligibility=m.training_eligible?'Éligible à l’entraînement':'Non éligible à l’entraînement';
+  const scope=m.metric_scope==='training'?'Entraînement':m.metric_scope==='diagnostic'?'Diagnostic':m.metric_scope==='recorded_inference'?'Inférence enregistrée':'Non précisé';
+  const critic=m.critic_mode==='player_only'?'Critiqueur limité aux observations joueur':m.critic_mode==='privileged_diagnostic'?'Critiqueur privilégié en diagnostic':m.critic_mode==='history_only_diagnostic'?'Critiqueur séparé — historique joueur seul':'Mode critiqueur non précisé (privilège non confirmé)';
+  host.insertAdjacentHTML('beforeend',`<div class="card">État du modèle<b>${model}</b></div><div class="card">Qualification<b>${eligibility}</b></div><div class="card">Périmètre des mesures<b>${scope}</b></div><div class="card">Critiqueur<b>${critic}</b></div>`)
+}
+function showTaskContext(context){
+  const host=$('#task-context');host.innerHTML='';if(!context||context.scope!=='diagnostic')return;
+  const labels={economy_gold_threshold:'Seuil d’or économique',development_capacity_and_reserve:'Capacité civile et réserve',settlement_and_survival:'Expansion et conservation de la ville initiale',short_tactical_defense:'Conservation de la ville et des forces à l’échéance'};
+  const values=[['Objectif d’exercice diagnostic',escapeHtml(labels[context.objective]||context.objective||'Objectif diagnostic')]];
+  const goal=context.instruction?.objective;
+  if(goal?.kind==='development_capacity_and_reserve')values.push(['Type d’unité civile',escapeHtml(goal.unit_type)],['Unités à posséder',nice(goal.target_count)],['Réserve d’or minimale',nice(goal.gold_reserve)]);
+  else if(goal?.kind==='settlement_and_survival')values.push(['Villes à posséder',nice(goal.target_cities)],['Ville initiale à conserver',`(${nice(goal.origin_city.x)}, ${nice(goal.origin_city.y)})`]);
+  else if(goal?.kind==='short_tactical_defense')values.push(['Ville à conserver',`(${nice(goal.defended_city.x)}, ${nice(goal.defended_city.y)})`],['Types de forces',goal.force_types.map(escapeHtml).join(', ')],['Forces à posséder à l’échéance',nice(goal.minimum_force)]);
+  else values.push(['Cible (or)',nice(context.target)]);
+  if(context.instruction)values.push(['Échéance publique de l’exercice (tour)',nice(context.instruction.deadline_turn)]);
+  values.push(['Plafond de décisions collectées',nice(context.max_decisions)],['Plafond de tours collectés',nice(context.max_turns)],['SHA-256 du scénario',escapeHtml(context.scenario_sha256||'')]);
+  host.innerHTML=values.map(([label,value])=>`<div class="card">${label}<b>${value}</b></div>`).join('')+
+    '<div class="muted small">Ces plafonds bornent la collecte de diagnostic; ils ne sont pas des échéances de victoire. Atteindre l’objectif d’exercice ne signifie pas une victoire dans Civilization VI.</div>'+
+    (context.instruction?'<div class="muted small">L’échéance publique termine l’exercice; un plafond de collecte peut seulement interrompre la trajectoire. Provenance déclarée, admission à l’entraînement non vérifiée.</div>':'');
+}
+function renderEvaluationTable(rows){
+  const host=$('#evaluation-table'),published=rows.filter(r=>r.stage.startsWith('evaluation_'));
+  if(!published.length){host.textContent='Aucune évaluation publiée pour ce run.';return}
+  const body=published.map(row=>{
+    const m=row.metrics||{},rawSplit=row.stage.slice('evaluation_'.length);
+    const split=rawSplit==='heldout'?'Hors entraînement':rawSplit==='training'?'Entraînement':rawSplit==='diagnostic'?'Diagnostic':escapeHtml(rawSplit||'Non précisé');
+    const trained=m.trained_critic_privileged===1?'Critique privilégié':m.trained_critic_privileged===0?'Historique joueur seul':'Non précisé';
+    const seed=Number.isFinite(m.pair_seed)?nice(m.pair_seed):'—';
+    const reward=Number.isFinite(m.reward)?nice(m.reward):'—';
+    const success=m.task_success===1?'Oui':m.task_success===0?'Non':'—';
+    const step=Number.isInteger(row.step)?nice(row.step):'—';
+    return `<tr><td>${split}</td><td>${seed}</td><td>${trained}</td><td>${reward}</td><td>${success}</td><td>${step}</td></tr>`
+  }).join('');
+  host.innerHTML=`<table><thead><tr><th>Split</th><th>Graine de paire</th><th>Critique du checkpoint évalué</th><th>Récompense diagnostic</th><th>Cible de l’exercice atteinte</th><th>Index d’étape</th></tr></thead><tbody>${body}</tbody></table>`
+}
+function updateRunHealth(m){
+  const host=$('#run-health');if(!m){host.textContent='';return}
+  if(m.status!=='running'){host.className=m.status==='failed'||m.status==='error'?'small error':'muted small';host.textContent=`Santé : état déclaré « ${m.status} ».`;return}
+  const heartbeat=Date.parse(m.heartbeat_at||''),threshold=Number(m.progress_timeout_seconds);
+  if(!Number.isFinite(heartbeat)||!Number.isFinite(threshold)||threshold<=0){host.textContent='Run déclaré running ; santé indéterminée (heartbeat et seuil de progression requis).';return}
+  const age=Math.max(0,(Date.now()-heartbeat)/1000);
+  if(age>threshold){host.className='small error';host.textContent=`Aucune progression depuis le seuil fourni (${nice(age)} s / ${nice(threshold)} s) ; le run est toujours déclaré running, processus non vérifié.`}else{host.className='muted small';host.textContent=`Heartbeat reçu il y a ${nice(age)} s (seuil ${nice(threshold)} s).`}
+}
+function showTimings(){
+  const aliases={'Moteur':['engine_seconds'],'Encodage':['encoding_seconds'],'Réseau (mesure publiée)':['network_seconds'],'Inférence sur le worker':['inference_seconds'],'Inférence distante · aller-retour total':['remote_inference_wall_seconds','remote_wall_seconds'],'Transport (mesure publiée)':['transport_seconds'],'Démarrage du worker':['worker_start_seconds'],'Mise à jour':['update_seconds'],'Réinitialisation':['reset_seconds']};
+  const host=$('#timings');host.innerHTML='';
+  for(const [label,keys] of Object.entries(aliases)){const key=keys.find(k=>metrics.some(r=>Number.isFinite(r.metrics[k])));if(!key)continue;const value=metrics.filter(r=>Number.isFinite(r.metrics[key])).at(-1).metrics[key];host.insertAdjacentHTML('beforeend',`<div class="card">${label}<b>${nice(value)} s</b></div>`)}
+  const recorded=currentManifest?.metric_scope==='recorded_inference'||metrics.some(r=>r.stage==='recorded_native_inference'),last=metrics.at(-1);let rate=null;
+  if(last){const keys=recorded?['inferences_per_second','observations_per_second','steps_per_second']:['steps_per_second'];const key=keys.find(k=>Number.isFinite(last.metrics[k]));if(key)rate=last.metrics[key]}
+  $('#throughput').textContent=rate==null?'Débit mesuré : indisponible.':recorded?`Inférences/s mesurées : ${nice(rate)} (inférence enregistrée, hors simulation).`:`Étapes/s mesurées : ${nice(rate)}`;
+  const optimization=$('#optimization');optimization.innerHTML='';const metricsMap={loss:'loss',gae_loss:'gae_loss',policy_loss:'policy_loss',value_loss:'value_loss',separate_value_loss:'separate_value_loss',separate_grad_norm:'separate_grad_norm',grad_norm:'grad_norm',gradient_norm:'gradient_norm',entropy:'entropy',kl:'kl'};
+  if(currentManifest?.critic_mode==='privileged_diagnostic'){metricsMap.privileged_value_loss='privileged_value_loss';metricsMap.privileged_grad_norm='privileged_grad_norm'}
+  for(const [label,key] of Object.entries(metricsMap)){const row=metrics.filter(r=>r.stage==='ppo_update'&&Number.isFinite(r.metrics[key])).at(-1);if(row)optimization.insertAdjacentHTML('beforeend',`<div class="card">${label}<b>${nice(row.metrics[key])}</b></div>`)}
+  if(!optimization.children.length)optimization.textContent='Aucune métrique GAE/PPO/gradient publiée pour ce run.'
+}
+// Native published observations use plots / visible_enemy_units and numeric
+// terrain_type fields. Keep only the rows already filtered by the API.
+function drawReplay(obs){
+  const c=$('#replay-canvas'),{x,w,h}=setCanvasSize(c);x.clearRect(0,0,w,h);
+  if(!obs){x.fillStyle='#a8bac8';x.fillText('Aucune observation publiée',20,35);return}
+  const plots=obs.plots||obs.tiles||obs.map?.tiles||[],units=obs.units||[],enemies=obs.visible_enemy_units||[],cities=obs.cities||[];
+  const pts=[...plots,...units,...enemies,...cities].filter(e=>Number.isFinite(e.x)&&Number.isFinite(e.y)).map(e=>[e.x,e.y]);
+  if(!pts.length){x.fillStyle='#a8bac8';x.fillText('Aucune coordonnée publiée à afficher.',20,35);return}
+  const xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]),minx=Math.min(...xs),maxx=Math.max(...xs),miny=Math.min(...ys),maxy=Math.max(...ys);
+  const cell=Math.max(14,Math.min(38,(w-60)/(maxx-minx+1),(h-60)/(maxy-miny+1))),ox=(w-(maxx-minx+1)*cell)/2,oy=(h-(maxy-miny+1)*cell*.82)/2;
+  const center=e=>[ox+(e.x-minx)*cell+cell/2+((e.y-miny)%2)*cell/2,oy+(e.y-miny)*cell*.82+cell/2];
+  for(const t of plots){const[cx,cy]=center(t);x.beginPath();for(let i=0;i<6;i++){const a=Math.PI/3*i-Math.PI/6,px=cx+cell*.47*Math.cos(a),py=cy+cell*.47*Math.sin(a);i?x.lineTo(px,py):x.moveTo(px,py)}x.closePath();x.fillStyle=t.visible===false?'#283038':(t.water?'#28566a':'#35483f');x.fill();x.strokeStyle='#596b69';x.stroke();const terrain=t.terrain_type??t.terrain;if(terrain!==undefined){x.fillStyle=t.visible===false?'#86939c':'#d0ddd4';x.font='9px system-ui';x.fillText(String(terrain).slice(0,4),cx-cell*.28,cy+3)}}
+  for(const e of units){const[cx,cy]=center(e);x.fillStyle='#83b9ff';x.beginPath();x.arc(cx,cy,7,0,Math.PI*2);x.fill()}
+  for(const e of enemies){const[cx,cy]=center(e);x.fillStyle='#ff7777';x.beginPath();x.arc(cx,cy,7,0,Math.PI*2);x.fill()}
+  for(const e of cities){const[cx,cy]=center(e);x.fillStyle='#ffd16f';x.fillRect(cx-6,cy-6,12,12)}
+  x.fillStyle='#dce6ed';x.fillText('● unités　● ennemis visibles　■ villes',12,h-12)
+}
+$('#runs').addEventListener('change',()=>{current='';replayAt=0;selectRun()});$('#replay-player').addEventListener('change',()=>{replaySource=$('#replay-player').value;replayAt=0;replayRequest++;clearReplay('Chargement de la perspective sélectionnée…');loadReplay(0)});$('#prev').onclick=()=>{if(replayAt>0)loadReplay(replayAt-1)};$('#next').onclick=()=>{if(replayAt+1<replayCount)loadReplay(replayAt+1)};window.addEventListener('resize',draw);refresh();setInterval(refresh,5000);
+</script></body></html>

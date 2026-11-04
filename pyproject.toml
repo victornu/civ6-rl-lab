@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "civ6-rl-lab"
+version = "0.2.0"
+description = "Recurrent reinforcement learning research for Civilization VI"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.6,<3"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["civ6rl", "civ6rl.learning*"]
+
+[tool.setuptools.package-data]
+"civ6rl.learning" = ["dashboard.html"]

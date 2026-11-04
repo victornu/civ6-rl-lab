@@ -1,0 +1,481 @@
+{
+  "schema": "civ6rl.learning_plan.v1",
+  "status": "implementation_and_qualification",
+  "training_eligible": false,
+  "objective": "A shared recurrent policy that learns transferable Civ6 skills and eventually full multiplayer strategy under the human player's information and action constraints.",
+  "current_stage": "phase1_platform",
+  "architecture": {
+    "framework": "PyTorch",
+    "map_encoder": "Two masked Conv2d layers on offset hex coordinates, with row parity and known/unknown channels; initial baseline, not a claim of hex symmetry invariance.",
+    "entity_encoder": "Shared entity network with public content embeddings and candidate-to-entity cross-attention, plus a masked empire summary.",
+    "memory": "LSTM per game generation, episode and player; never shared private states between players.",
+    "action_decoder": "Score every published root candidate with exact padding masks. For policies, sample each slot with exact changed-completion masks, then submit one atomic joint assignment. Unsupported menus stop the frame.",
+    "algorithm": "Recurrent PPO with joint root/assignment probabilities, ordered player sequences, bounded gradients and terminal/truncation bootstraps. Conditional entropy uses a measured Monte Carlo estimate.",
+    "policy_scope": "One shared policy conditioned on civilization, leader, rules profile and curriculum objective when these inputs are implemented and qualified. No separate compulsory network per civilization.",
+    "asymmetric_actor_critic": {
+      "decision": "Evaluate a separate privileged critic against the player-only baseline; never give privileged state to the actor.",
+      "actor": "CNN/entity encoder/LSTM with player observations, public exercise goal and human-available action interface. Native equality still requires qualification.",
+      "critic": "Separate value-only parameters and optimizer. Prototype consumes an explicitly masked privileged feature vector and detached public actor hidden/cell state. This compressed history is an approximation, not a proof of unbiased policy gradients.",
+      "implementation_status": "998: CPU/MPS fixtures verified; task-conditioned native multiplayer diagnostic collected 63 actions with 1 coordinated asymmetric updates and 2 same-player returns after opponents. Independent public actor and private critic sidecar; strategic eligibility remains unqualified.",
+      "required_boundaries": [
+        "Separate sidecar/schema for privileged records; exact episode/generation/player/sequence/turn/source joins.",
+        "No privileged values in actor tensors, candidate IDs/features, action masks, recurrent memory or deployment artifact.",
+        "Changing private state at fixed public history must not change deployed actor probabilities or memory.",
+        "Critic loss and optimizer cannot update actor weights. Actor PPO updates may use detached advantages from the selected critic.",
+        "Critic predictions and rewards are never actor inputs; game rewards and objectives stay unchanged.",
+        "Audit native human action availability including hidden-state-dependent menus; do not prune actions speculatively.",
+        "Freeze behavior actor and critic versions for collection/replay/bootstrap, distinguish terminal from truncation, snapshot both optimizers for full learner resume.",
+        "Evaluate frozen actor with privileged channel removed and no online weight adaptation. Use held-out seeds and matched compute comparisons."
+      ],
+      "comparison": "Compare separate public-history-only and privileged critics with matched architecture/tasks/rewards/seeds/compute; keep existing shared player-only critic as an additional baseline. Evaluate actor-only on held-out scenarios.",
+      "references": [
+        "https://arxiv.org/abs/1710.06542",
+        "https://arxiv.org/abs/2105.11674"
+      ]
+    },
+    "current_limits": [
+      "Matched critic comparison and frozen actor-only native evaluation work. Diverse qualified scenarios, human equivalence and strategic benefit remain unproven.",
+      "Public task conditioning exists; civilization/profile conditioning, human-equivalent actions/observations and qualified diverse curriculum remain incomplete.",
+      "Self-play learner, native held-out evaluation and distributed scheduling remain incomplete.",
+      "Tiny CNN/LSTM and partial private critic are diagnostic baselines, not final architecture or model size."
+    ],
+    "public_dialogue_encoder": "Bounded lossless UTF-8 input, small masked byte CNN, button features, existing map/entity/LSTM policy. No opaque IDs or AI reasons in neural tensors."
+  },
+  "phases": [
+    {
+      "id": 1,
+      "name": "Short native situations",
+      "distribution": "Varied economy, production, expansion and combat states, small maps, multiple seeds and starting positions, initially a small declared civilization panel.",
+      "reward": "Explicit terminal task success/failure for skill pretraining. No reward for every click, build, move or attack. A task success is not an official Civ6 victory.",
+      "promotion": "Transfer to unseen native scenarios and seeds; stable learning across seeds; no hidden information or action substitutions; measured replay review and baseline comparison."
+    },
+    {
+      "id": 2,
+      "name": "Interacting skills",
+      "distribution": "Longer native situations coupling expansion, research, economy, defense and timing.",
+      "reward": "Reduce reliance on task-specific objectives while introducing official game outcomes.",
+      "promotion": "Retain earlier skills and outperform fixed opponents on held-out interactions."
+    },
+    {
+      "id": 3,
+      "name": "Complete duels",
+      "distribution": "Whole small native games with all allowed victory paths and explicit required choices.",
+      "reward": "Official win/loss/draw or declared time-limit truncation; no disguised loss for host failures.",
+      "promotion": "Reliable complete games, diverse opponents, held-out maps and credible evaluation uncertainty."
+    },
+    {
+      "id": 4,
+      "name": "Multiplayer generalization",
+      "distribution": "Progressively more players, civilizations, leaders, maps and versioned DLC/mod profiles.",
+      "reward": "Official outcomes and protocol-specific multiplayer evaluation.",
+      "promotion": "Cross-play league matrices and per-civilization results, not only aggregate reward."
+    },
+    {
+      "id": 5,
+      "name": "Open-ended league",
+      "distribution": "Current and historical policies, specialized adversaries, diverse states and strategies.",
+      "reward": "Strategic outcomes; any exploration objective is separately measured and ablated.",
+      "promotion": "Reproduce novel strategies/exploits in the reference game; no guarantee of discovering all possible exploits or theoretical perfection."
+    }
+  ],
+  "phase1_required_gates": [
+    {
+      "id": "native_scenario_identity",
+      "passed": false,
+      "requirement": "Exact save/configuration/GameCore/final databases/gameplay scripts/content profile, deterministic reset evidence for each admitted scenario."
+    },
+    {
+      "id": "player_observation_contract",
+      "passed": false,
+      "requirement": "Required information is actually published and encoded; fog and player isolation checked; absent data never silently treated as known zero.",
+      "partial_evidence": {
+        "path": "evidence/learning-phase1-progress988.json",
+        "bytes": 32105,
+        "sha256": "410cd0a2bac5ffbf85f59d3f83f6b9fea8edc959e87b82795a7a6228dfbc25e3"
+      }
+    },
+    {
+      "id": "action_contract",
+      "passed": false,
+      "requirement": "All human choices reachable in admitted scenarios, including assignment choices and applicable forced end turn; native masks; no heuristic pruning or fallback moves.",
+      "partial_evidence": {
+        "path": "evidence/learning-phase1-progress989.json",
+        "bytes": 22102,
+        "sha256": "36249bb3c5d04178ff0cee6b10d0477dd776e0f5d4330e1150680bee5b270488"
+      }
+    },
+    {
+      "id": "task_reward_and_endings",
+      "passed": false,
+      "requirement": "Versioned task terminal condition and limits, crash exclusion, tested reward provenance; official victory distinguished from curriculum success."
+    },
+    {
+      "id": "recurrent_rollout_learning",
+      "passed": false,
+      "requirement": "Native trajectories with player memory, behavior-policy version/logprob, sequence replay/burn-in, safe checkpoint/resume and evaluation split.",
+      "partial_evidence": {
+        "path": "evidence/learning-phase1-progress981.json",
+        "bytes": 20526,
+        "sha256": "4c8b7e2304897d0b1f92457cc92ef01f8f6f0963635d947760257e10bd16c303"
+      }
+    },
+    {
+      "id": "operational_observability",
+      "passed": false,
+      "requirement": "Metrics, native replay, no-progress and divergence handling, stopped/error state, compute/time budgets, measured Windows/Mac transport.",
+      "partial_evidence": {
+        "path": "evidence/learning-phase1-progress981.json",
+        "bytes": 20526,
+        "sha256": "4c8b7e2304897d0b1f92457cc92ef01f8f6f0963635d947760257e10bd16c303"
+      }
+    }
+  ],
+  "deployment": {
+    "windows": "Native GameCore actors with independent databases, bounded jobs and memory. Local batched inference should be measured against remote inference.",
+    "mac": "PyTorch learner and optional batched MPS inference; authorized SSH, pinned source and policy versions.",
+    "measure_separately": [
+      "native transitions",
+      "reset",
+      "observation extraction",
+      "encoding and tensor conversion",
+      "serialization/transport",
+      "inference",
+      "optimizer update",
+      "queue wait"
+    ],
+    "no_assumption": "MPS is not automatically faster for tiny single-observation inference. Inference throughput is not native game throughput.",
+    "production_changes": "Freeze a qualified environment version for training; develop the next host phase separately to avoid invalidating ongoing trajectories.",
+    "measured_baseline_inference": {
+      "evidence": {
+        "path": "work/phase1-learning974/inference-benchmark-20261016T121241Z.json",
+        "bytes": 8713,
+        "sha256": "4d32104f742477478b88ffbc06e06d5d3847e857ed088e31b540d5a2e903e7d6"
+      },
+      "preferred_device": "cpu",
+      "scope": "Small baseline, duplicated recorded player frame, batches 1/8/32; excludes SSH and native GameCore."
+    }
+  },
+  "monitoring": {
+    "url": "http://127.0.0.1:8767/",
+    "signals": [
+      "task reward",
+      "held-out evaluations",
+      "policy/value loss",
+      "entropy",
+      "approximate KL",
+      "gradient norm",
+      "action distribution",
+      "episode length",
+      "throughput by stage",
+      "native errors",
+      "player-scoped replays"
+    ],
+    "current_status": "Native replay, one measured MPS PPO update, bounded run control and diagnostic evaluation are available. No qualified held-out strategic learning curve yet.",
+    "failure_policy": "Stop on nonfinite updates, stale identities, unknown vocabulary/actions, invalid host outcomes. Do not count host crashes as player defeats."
+  },
+  "long_training_authorized_now": false,
+  "native_graphical_executable_required_now": false,
+  "latest_evidence": {
+    "path": "evidence/learning-phase1-progress1000.json",
+    "bytes": 13224,
+    "sha256": "d81e033f68f4cf4071683efcc916f7fa0266645e79f6c2b50e6718c44520f9f8"
+  },
+  "phase1_diagnostic_milestone": {
+    "evidence": {
+      "path": "evidence/learning-phase1-progress979.json",
+      "bytes": 31756,
+      "sha256": "bd0cced069fd0d71402aa827b46df7338d0982ea65134e5d1da8812a25dde36a"
+    },
+    "native_optimizer_updates_this_run": 4,
+    "native_asymmetric_ppo_verified": true,
+    "completed_task_asymmetric_resume_verified": true,
+    "training_eligible": false,
+    "matched_separate_critic_comparison_verified": true,
+    "frozen_native_evaluations": 4,
+    "unique_native_actions": 72
+  },
+  "observation_treasury980": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress980.json",
+      "bytes": 16442,
+      "sha256": "35405422e5162842a5ef8ff6eb30027db80828dffaebcd1f5deba6788962eb01"
+    },
+    "human_equivalence_complete": false,
+    "global_features": 23,
+    "native_precision_projection": true,
+    "strategic_training_ready": false
+  },
+  "public_task_and_wire981": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress981.json",
+      "bytes": 20526,
+      "sha256": "4c8b7e2304897d0b1f92457cc92ef01f8f6f0963635d947760257e10bd16c303"
+    },
+    "fractional_task_target_refused": true,
+    "bounded_lossless_transport": true,
+    "training_eligible": false
+  },
+  "observation_yields982": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress982.json",
+      "bytes": 19030,
+      "sha256": "ab7c48333753bd854af19afe644720274b89b3c0091afb8ae3c8c745402c20ab"
+    },
+    "global_features": 25,
+    "native_formatter_reused": true,
+    "human_equivalence_complete": false,
+    "strategic_training_ready": false
+  },
+  "observation_research983": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress983.json",
+      "bytes": 18559,
+      "sha256": "bce410e551b23fa6fdeebc23eb1307a26c1640053b9b8dcbe805db4c1beb99ec"
+    },
+    "global_features": 33,
+    "action_features": 49,
+    "native_rules_reused": true,
+    "human_equivalence_complete": false,
+    "strategic_training_ready": false
+  },
+  "trade_encoding984": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress984.json",
+      "bytes": 19548,
+      "sha256": "1f424a5086c59a37a60756f51ca1561c7e1c8c7a896417a59a63e2570d541275"
+    },
+    "global_features": 33,
+    "action_features": 117,
+    "human_equivalence_complete": false
+  },
+  "unit_work_encoding985": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress985.json",
+      "bytes": 19291,
+      "sha256": "0f288144cfd2a2e208244c5a20e725eff01e4131d5035babe28f8723b9644fea"
+    },
+    "action_features": 119,
+    "human_equivalence_complete": false
+  },
+  "diplomacy_display986": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress986.json",
+      "bytes": 7651,
+      "sha256": "b33c6c6961eb846fb7fc55551d3ec3e92fedb8d5090ce25689c6ac662e48b874"
+    },
+    "actor_encoding_integrated": false,
+    "human_equivalence_complete": false
+  },
+  "diplomacy_encoding987": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress987.json",
+      "bytes": 27223,
+      "sha256": "6adcedec37930eac67fd491b47c0083f6e552823c2b2cd0baf6ea2dffcfe00c2"
+    },
+    "actor_encoding_integrated": true,
+    "privileged_boundary_join_verified": true,
+    "action_features": 120,
+    "human_equivalence_complete": false
+  },
+  "production_encoding988": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress988.json",
+      "bytes": 32105,
+      "sha256": "410cd0a2bac5ffbf85f59d3f83f6b9fea8edc959e87b82795a7a6228dfbc25e3"
+    },
+    "action_features": 129,
+    "actor_encoding_integrated": true,
+    "human_equivalence_complete": false
+  },
+  "phase1_next_gates988": {
+    "path": "work/phase1-learning988/phase1-next-gates.json",
+    "bytes": 13837,
+    "sha256": "19bcf351460d322157f8bd2ec125e60fe0904c900ee7f7c115895ebce59eee34"
+  },
+  "movement_encoding989": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress989.json",
+      "bytes": 22102,
+      "sha256": "36249bb3c5d04178ff0cee6b10d0477dd776e0f5d4330e1150680bee5b270488"
+    },
+    "action_features": 129,
+    "actor_encoding_integrated": true,
+    "human_equivalence_complete": false
+  },
+  "scenario_admission_design989": {
+    "path": "work/phase1-learning989/scenario-admission-design.json",
+    "bytes": 39502,
+    "sha256": "d0e56ca07bdaebfda1967e2c8a4b6b22d8f6fced7986a7579d01e26cc350cc8c"
+  },
+  "plot_encoding990": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress990.json",
+      "bytes": 32636,
+      "sha256": "33766522aafdcfac3bc9ed118c07a0d93dbf5b8cbf55753baec92eb50114895f"
+    },
+    "map_channels": 69,
+    "map_categories": 2,
+    "action_features": 129,
+    "actor_encoding_integrated": true,
+    "human_equivalence_complete": false
+  },
+  "skill_contract991": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress991.json",
+      "bytes": 7511,
+      "sha256": "6477507a008151ce68e7cef1fd300235ac4a7615405e626ef9b9d0c0d4cb5054"
+    },
+    "actor_conditioning_integrated": false,
+    "native_collector_integrated": false,
+    "qualified_native_panel": false
+  },
+  "active_database_capture992": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress992.json",
+      "bytes": 13165,
+      "sha256": "f0b6332311c3c10955cc01c9c68d436c20739e2e887b8e4762449e1c9e49222a"
+    },
+    "bridge_prepared": true,
+    "installed": false,
+    "live_capture_qualified": false,
+    "save_database_script_join": false
+  },
+  "skill_conditioning993": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress993.json",
+      "bytes": 22471,
+      "sha256": "279917e32639a6471f49092d0077e3c00e9dc2114b4cc92a6bff7fbe2b67b769"
+    },
+    "actor_conditioning_integrated": true,
+    "native_collector_diagnostic_verified": true,
+    "positive_negative_native_task_outcomes_qualified": false,
+    "independent_native_panel_qualified": false,
+    "artifact_schema": "civ6rl.recurrent_policy.v6"
+  },
+  "active_database_bundle993": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress993.json",
+      "bytes": 22471,
+      "sha256": "279917e32639a6471f49092d0077e3c00e9dc2114b4cc92a6bff7fbe2b67b769"
+    },
+    "prepared": true,
+    "official_capture_qualified": false
+  },
+  "native_comparison994": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress994.json",
+      "bytes": 18942,
+      "sha256": "6648ec51ecef95f9c14d5a40da7e23d1c17cc1d1fe5084f2dc2ebbb6a38243a2"
+    },
+    "actor_schema": "civ6rl.recurrent_policy.v6",
+    "matched_update_verified": true,
+    "frozen_native_evaluation_verified": true,
+    "held_out": false,
+    "skill_gain_demonstrated": false,
+    "critic_advantage_demonstrated": false
+  },
+  "active_capture994": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress994.json",
+      "bytes": 18942,
+      "sha256": "6648ec51ecef95f9c14d5a40da7e23d1c17cc1d1fe5084f2dc2ebbb6a38243a2"
+    },
+    "prepared": true,
+    "official_capture_qualified": false,
+    "second_base_root_available": true,
+    "hotseat_actor_qualified": false
+  },
+  "hotseat_actor995": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress995.json",
+      "bytes": 13322,
+      "sha256": "d203ad13fbc7224870ee409b4ff85edcbd15057defecdce6a9497b0916ac17aa"
+    },
+    "second_native_root_actor_verified": true,
+    "native_handoffs_verified": false,
+    "all_players_policy_verified": false,
+    "multiplayer_ppo_connected": false,
+    "training_eligible": false
+  },
+  "native_reward_witnesses995": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress995.json",
+      "bytes": 13322,
+      "sha256": "d203ad13fbc7224870ee409b4ff85edcbd15057defecdce6a9497b0916ac17aa"
+    },
+    "retrospective_contracts": 9,
+    "positive": 4,
+    "negative": 5,
+    "prospective_scenario_qualification": false
+  },
+  "hotseat_actor996": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress996.json",
+      "bytes": 15010,
+      "sha256": "aafbf54c313d4882ec49b74ec40e99e08683b0a86c09964114705f0f00cb07ef"
+    },
+    "native_handoffs": 1,
+    "players_acted": [
+      0,
+      1
+    ],
+    "all_four_players_acted": false,
+    "native_frozen_actor_verified": true,
+    "multiplayer_ppo_connected": false,
+    "training_eligible": false
+  },
+  "multiplayer_learner997": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress997.json",
+      "bytes": 13636,
+      "sha256": "8d71b5fb946fab3e16a7e879e9223ee728bff55ddacb452e6433ceba9418e5a7"
+    },
+    "grouped_ppo_fixture_verified": true,
+    "actor_critic_checkpoint_fixture_verified": true,
+    "replay_ui_verified": true,
+    "native_delayed_return_qualified": false,
+    "native_multiplayer_ppo_qualified": false,
+    "training_eligible": false
+  },
+  "native_multiplayer998": {
+    "proof": {
+      "path": "evidence/learning-phase1-progress998.json",
+      "bytes": 18956,
+      "sha256": "ddf50bf4f65d978b3b9246b91d3e99eccc13b140c7b3d81ca918afe29ce6f2ed"
+    },
+    "diagnostic_updates": 1,
+    "native_handoffs": 5,
+    "delayed_same_player_returns": 2,
+    "training_eligible": false
+  },
+  "own_city_movement999": {
+    "status": "native_owned_city_movement_and_portable_actor_verified",
+    "evidence": {
+      "path": "evidence/learning-phase1-progress999.json",
+      "bytes": 17877,
+      "sha256": "83dbfb2c1af21a8b5296413be5d75626947fec4b3e1d32777460bc2d69443bce"
+    },
+    "native_players": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "native_entries": 5,
+    "native_transits": 1,
+    "strategic_training_ready": false
+  },
+  "city_focus1000": {
+    "status": "native_city_focus_and_explicit_actor_v7_verified",
+    "evidence": {
+      "path": "evidence/learning-phase1-progress1000.json",
+      "bytes": 13224,
+      "sha256": "d81e033f68f4cf4071683efcc916f7fa0266645e79f6c2b50e6718c44520f9f8"
+    },
+    "diagnostic_only": true,
+    "enabled_by_default": false,
+    "tutorial_gate_qualified": false,
+    "actor_schema": "civ6rl.recurrent_policy.v7",
+    "training_eligible": false
+  }
+}
