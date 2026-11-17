@@ -36,13 +36,23 @@ PUBLIC_OBSERVATION_SCHEMA = 'civ6rl-public-skill-observation-v1'
 _PUBLIC_SOURCES = {'gamecore_sha256','host_sha256','collector_source_sha256'}
 
 
+def _is_display_observation(value):
+    if value.get('schema') in ('civ6rl-player-observation-v1', PUBLIC_OBSERVATION_SCHEMA):
+        return False
+    from civ6_host.contracts.player_display import PUBLIC_OBSERVATION_SCHEMA as DISPLAY_SCHEMA
+    return value.get('schema') == DISPLAY_SCHEMA
+
+
 def project_public_observation(value):
     """Minimal owned-state reward view; never a replacement for actor observations."""
-    _require(type(value) is dict and value.get('schema') in
-             ('civ6rl-player-observation-v1',PUBLIC_OBSERVATION_SCHEMA), 'unsupported public objective observation')
-    if value['schema'] == 'civ6rl-player-observation-v1':
+    _require(type(value) is dict and (value.get('schema') in
+             ('civ6rl-player-observation-v1',PUBLIC_OBSERVATION_SCHEMA) or _is_display_observation(value)),
+             'unsupported public objective observation')
+    if value['schema'] != PUBLIC_OBSERVATION_SCHEMA:
         from ..native_player_observation import parse_player_observation
-        parse_player_observation(json.dumps(value,allow_nan=False),value.get('player_id'))
+        shape = copy.deepcopy(value)
+        shape['schema'] = 'civ6rl-player-observation-v1'
+        parse_player_observation(json.dumps(shape,allow_nan=False),value.get('player_id'))
         result = {key:copy.deepcopy(value[key]) for key in ('player_id','turn','width','height')}
         result.update(schema=PUBLIC_OBSERVATION_SCHEMA,
             cities=[{key:row[key] for key in ('id','owner','x','y')} for row in value['cities']],
@@ -168,9 +178,10 @@ def _objective(value, catalogue):
 
 
 def _observation(value, player_id, catalogue, objective):
-    _require(type(value) is dict and value.get('schema') in ('civ6rl-player-observation-v1',PUBLIC_OBSERVATION_SCHEMA),
+    _require(type(value) is dict and (value.get('schema') in ('civ6rl-player-observation-v1',PUBLIC_OBSERVATION_SCHEMA)
+             or _is_display_observation(value)),
              'unsupported player observation')
-    if value['schema'] == PUBLIC_OBSERVATION_SCHEMA:
+    if value['schema'] != 'civ6rl-player-observation-v1':
         project_public_observation(value)
     _require(type(value.get('player_id')) is int and value['player_id'] == player_id, 'observation player differs')
     turn = _int(value.get('turn'), 0, 1000000, 'observation turn')

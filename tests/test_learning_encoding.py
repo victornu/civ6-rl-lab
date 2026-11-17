@@ -204,6 +204,20 @@ class LearningEncodingTests(unittest.TestCase):
         self.assertEqual(len(tokens), 3)
         self.assertFalse(encoded["training_eligible"])
 
+    def test_mod_policy_identifier_is_preserved_without_a_base_prefix(self):
+        slots = [{"slot": 0, "prior_index": -1, "options": [
+            {"index": 1, "hash": 101, "native_hash": 101, "policy_type": "BBG_MODERN_DRILL"}]}]
+        frame = response(policy_catalog={"player_id": 0, "turn": 7, "reason": "available", "slots": slots},
+            candidates=[{"candidate_id": "set-policies", "action": {"kind": "policies", "slots": copy.deepcopy(slots)}}])
+        vocabulary = ContentVocabulary.fit(frame)
+        encoded = encode(frame, vocabulary)
+        self.assertEqual(encoded["policy_catalog"]["slots"], slots)
+        self.assertEqual(encoded["policy_catalog"]["option_tokens"][0][0][2],
+                         vocabulary.lookup("policy.type", "BBG_MODERN_DRILL"))
+        frame["decisions"]["policies"]["slots"][0]["options"][0]["policy_type"] = "BBG_BAD:POLICY"
+        with self.assertRaises(ValueError):
+            encode(frame, vocabulary)
+
     def test_policy_hashes_are_content_tokens_not_native_submit_ids(self):
         first = response(policies=True)
         option_hash = 0xFFFFFF65

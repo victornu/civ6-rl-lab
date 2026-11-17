@@ -4,6 +4,7 @@ import math
 import tempfile
 import unittest
 from datetime import datetime, timezone
+from importlib.resources import files
 from pathlib import Path
 
 from civ6rl.learning.monitor import MonitorService, append_metric, make_handler
@@ -351,7 +352,7 @@ class LearningMonitorTests(unittest.TestCase):
         self.assertIn("native host failed", failed_manifest["error"])
 
     def test_dashboard_labels_recorded_inference_and_unexecuted_proposal(self):
-        html = (Path(__file__).parents[1] / "civ6rl" / "learning" / "dashboard.html").read_text(encoding="utf-8")
+        html = files("civ6rl.learning").joinpath("dashboard.html").read_text(encoding="utf-8")
         self.assertIn("Inférences/s mesurées", html)
         self.assertIn("inférence enregistrée, non exécutée", html)
         self.assertIn("visible_enemy_units", html)

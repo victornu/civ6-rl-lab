@@ -238,7 +238,8 @@ def _grouped_targets(groups, maximum_steps=64):
                 from .policy_assignments import validate_joint_assignment
                 for col, action in enumerate(actions[t].tolist()):
                     if indices[col] == action:
-                        validate_joint_assignment(catalogs[col]['slots'], assignments[t][col])
+                        validate_joint_assignment(catalogs[col]['slots'], assignments[t][col],
+                                                  allow_unchanged=catalogs[col].get('allow_unchanged', False))
                     elif assignments[t][col] is not None:
                         raise ValueError('ordinary grouped action cannot have policy assignments')
             elif any(value is not None for value in assignments[t]):

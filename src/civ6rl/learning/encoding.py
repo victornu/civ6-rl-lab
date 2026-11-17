@@ -146,16 +146,30 @@ ACTOR_V15 = 'civ6rl.recurrent_policy.v15'
 ENTITY_FEATURES_V15 = ENTITY_FEATURES_V14 + PURCHASE_ENTITY_FEATURES
 ACTION_FEATURES_V15 = ACTION_FEATURES_V14
 ENTITY_CATEGORICAL_FIELDS_V15 = ENTITY_CATEGORICAL_FIELDS + PURCHASE_CATEGORICAL_FIELDS
+from .governors import (ACTION_KINDS as GOVERNOR_ACTION_KINDS,
+    ENTITY_FEATURES as GOVERNOR_ENTITY_FEATURES, ACTION_FEATURES as GOVERNOR_ACTION_FEATURES,
+    ENTITY_CATEGORICAL_FIELDS as GOVERNOR_ENTITY_CATEGORICAL_FIELDS,
+    ACTION_CATEGORICAL_FIELDS as GOVERNOR_ACTION_CATEGORICAL_FIELDS)
+ACTOR_V16 = 'civ6rl.recurrent_policy.v16'
+_ACTION_KIND_PREFIX_V15 = tuple(name for name in ACTION_FEATURES_V15 if name.startswith('kind:'))
+ACTION_FEATURES_V16 = (_ACTION_KIND_PREFIX_V15
+    + tuple('kind:' + kind for kind in GOVERNOR_ACTION_KINDS)
+    + ACTION_FEATURES_V15[len(_ACTION_KIND_PREFIX_V15):] + GOVERNOR_ACTION_FEATURES)
+ENTITY_FEATURES_V16 = ENTITY_FEATURES_V15 + GOVERNOR_ENTITY_FEATURES
+ENTITY_CATEGORICAL_FIELDS_V16 = ENTITY_CATEGORICAL_FIELDS_V15 + GOVERNOR_ENTITY_CATEGORICAL_FIELDS
+ACTION_CATEGORICAL_FIELDS_V16 = ACTION_CATEGORICAL_FIELDS_V10 + GOVERNOR_ACTION_CATEGORICAL_FIELDS
 
 
 def entity_categorical_fields(actor_schema):
     actor_feature_names(actor_schema)
+    if actor_schema == ACTOR_V16: return ENTITY_CATEGORICAL_FIELDS_V16
     return ENTITY_CATEGORICAL_FIELDS_V15 if actor_schema == ACTOR_V15 else ENTITY_CATEGORICAL_FIELDS
 
 
 def action_categorical_fields(actor_schema):
     actor_feature_names(actor_schema)
-    return ACTION_CATEGORICAL_FIELDS_V10 if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15) else ACTION_CATEGORICAL_FIELDS
+    if actor_schema == ACTOR_V16: return ACTION_CATEGORICAL_FIELDS_V16
+    return ACTION_CATEGORICAL_FIELDS_V10 if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16) else ACTION_CATEGORICAL_FIELDS
 
 
 def actor_feature_names(actor_schema):
@@ -169,6 +183,7 @@ def actor_feature_names(actor_schema):
     if actor_schema == ACTOR_V13: return ENTITY_FEATURES_V13, ACTION_FEATURES_V13
     if actor_schema == ACTOR_V14: return ENTITY_FEATURES_V14, ACTION_FEATURES_V14
     if actor_schema == ACTOR_V15: return ENTITY_FEATURES_V15, ACTION_FEATURES_V15
+    if actor_schema == ACTOR_V16: return ENTITY_FEATURES_V16, ACTION_FEATURES_V16
     raise ValueError("unsupported actor feature schema")
 
 
@@ -303,7 +318,8 @@ class ContentVocabulary:
         policy_catalog = decisions.get("policies")
         policy_slots = []
         if policy_catalog is not None:
-            _require_policy_catalog(policy_catalog, obs.get("player_id"), obs.get("turn"))
+            _require_policy_catalog(policy_catalog, obs.get("player_id"), obs.get("turn"),
+                                    allow_unchanged=_policy_reconfirm_enabled(decisions))
             policy_slots = policy_catalog["slots"]
         # Include stable policy identities from the public catalogue as well
         # as candidate copies. Native hashes are validation-only values.
@@ -312,7 +328,7 @@ class ContentVocabulary:
             action = row["action"]
             if action.get("kind") == "policies":
                 slots = action.get("slots")
-                valid_next_hashes(slots, [])
+                valid_next_hashes(slots, [], allow_unchanged=_policy_reconfirm_enabled(decisions))
                 policy_slot_sets.append(slots)
         for slots in policy_slot_sets:
             for row in slots:
@@ -397,7 +413,13 @@ def _require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
-def _require_policy_catalog(value: dict, player_id: int, turn: int) -> list[dict]:
+def _policy_reconfirm_enabled(decisions: dict) -> bool:
+    """Internal gate called only after the complete public LAN frame validates."""
+    from civ6_host.contracts.network_turn import POLICY_RECONFIRM_CAPABILITY_SCHEMAS
+    return decisions.get("schema") in POLICY_RECONFIRM_CAPABILITY_SCHEMAS
+
+
+def _require_policy_catalog(value: dict, player_id: int, turn: int, *, allow_unchanged: bool = False) -> list[dict]:
     _require(type(value) is dict and set(value) == {"player_id", "turn", "reason", "slots"}
              and type(value.get("player_id")) is int and value["player_id"] == player_id
              and type(value.get("turn")) is int and value["turn"] == turn
@@ -405,7 +427,7 @@ def _require_policy_catalog(value: dict, player_id: int, turn: int) -> list[dict
              "malformed public policy catalogue")
     slots = value["slots"]
     # The matching helper owns the strict native slot/option shape validation.
-    valid_next_hashes(slots, [])
+    valid_next_hashes(slots, [], allow_unchanged=allow_unchanged)
     _require((value["reason"] == "no_policy_slots") == (len(slots) == 0)
              and (value["reason"] == "available" or all(not row["options"] for row in slots)),
              "policy catalogue reason and menus disagree")
@@ -475,7 +497,7 @@ def _plot_values(row: dict, channels: list[list[list[float]]], x: int, y: int,
         at("resource_type")[y][x] = _finite(row["resource_type"], "resource_type")
         at("resource_known")[y][x] = 1.0
         quantity = _finite(row["resource_count"], "resource_count")
-        if actor_schema not in (ACTOR_V14, ACTOR_V15):
+        if actor_schema not in (ACTOR_V14, ACTOR_V15, ACTOR_V16):
             at("resource_count")[y][x] = quantity
             at("resource_count_known")[y][x] = 1.0
 
@@ -501,14 +523,24 @@ def _action_vector(action: dict, obs: dict, id_coords: dict, *, research_choice=
                    production_choice=None, focus_choice=None, citizen_choice=None, queue_choice=None,
                    source_bound=False, movement_choice=None, actor_schema=ACTOR_V6) -> list[float]:
     kind = action.get("kind")
+    # The host keeps the distinct gesture. The frozen actor represents this
+    # global policy control with its policy-family bit, positive cost and
+    # existing yield-currency token; it has no joint slot assignment.
+    policy_unlock = kind == 'policy_unlock'
+    if policy_unlock:
+        from civ6_host.contracts.policy_unlock import validate_action
+        validate_action(action)
+        _require(actor_schema in (ACTOR_V15, ACTOR_V16), 'Paid policy unlock requires the explicit v15+ input mapping')
+    feature_kind = 'policies' if policy_unlock else kind
     if production_choice is not None:
         _require(kind in PRODUCTION_KINDS and "cost" not in action,
                  "production display must use its validated public quote, not generic action cost")
-    action_kinds = (_ACTION_KINDS + (("city_focus",) if actor_schema in (ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15) else ())
-                    + ((CITIZEN_ACTION_KIND,) if actor_schema in (ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15) else ())
-                    + (WORLD_ACTION_KINDS if actor_schema in (ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15) else ()))
+    action_kinds = (_ACTION_KINDS + (("city_focus",) if actor_schema in (ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16) else ())
+                    + ((CITIZEN_ACTION_KIND,) if actor_schema in (ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16) else ())
+                    + (WORLD_ACTION_KINDS if actor_schema in (ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16) else ())
+                    + (GOVERNOR_ACTION_KINDS if actor_schema == ACTOR_V16 else ()))
     _, feature_names = actor_feature_names(actor_schema)
-    _require(kind in action_kinds, f"unsupported candidate action kind: {kind!r}")
+    _require(feature_kind in action_kinds, f"unsupported candidate action kind: {kind!r}")
     if kind == "policies":
         _require(set(action) == {"kind", "slots"} and type(action["slots"]) is list,
                  "policy candidate must carry only its native slot assignment catalogue")
@@ -516,7 +548,7 @@ def _action_vector(action: dict, obs: dict, id_coords: dict, *, research_choice=
              "purchase action must carry exactly one published price token")
     identity_fields = {"unit_id", "city_id", "origin_city_id", "destination_city_id",
                        "moves_token", "price_token"}
-    if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15) and kind == 'district_range_attack':
+    if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16) and kind == 'district_range_attack':
         identity_fields.add('district_id')
     if kind == "city_focus":
         _require(type(focus_choice) is list and len(focus_choice) == len(FOCUS_ACTION_FEATURES),
@@ -536,7 +568,7 @@ def _action_vector(action: dict, obs: dict, id_coords: dict, *, research_choice=
                        "destination_owner", "destination_city", "position", "source_position",
                        "destination_position", "charges", "selector"}
     semantic = set(action) & semantic_fields
-    if actor_schema in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15) and kind in QUEUE_ACTION_KINDS:
+    if actor_schema in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16) and kind in QUEUE_ACTION_KINDS:
         _require(type(queue_choice) is list and len(queue_choice) == len(QUEUE_ACTION_FEATURES),
                  'Queue action lacks its exact public native catalog join')
         semantic -= {'position', 'source_position', 'destination_position'}
@@ -563,7 +595,7 @@ def _action_vector(action: dict, obs: dict, id_coords: dict, *, research_choice=
     allowed = {"kind", "cost", "source_x", "source_y", "destination_x", "destination_y",
                "target_x", "target_y", "x", "y", "x0", "y0", "x1", "y1",
                "source_plot_id", "destination_plot_id", "plot_id", "candidate_id"} | identity_fields
-    if actor_schema in (ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15) and kind == 'world_war_response':
+    if actor_schema in (ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16) and kind == 'world_war_response':
         allowed.add('accept')
     allowed.update(action_categorical_fields(actor_schema))
     allowed.update(permitted_trade_semantics)
@@ -579,12 +611,14 @@ def _action_vector(action: dict, obs: dict, id_coords: dict, *, research_choice=
         raise NotImplementedError(f"action fields need an encoder: {sorted(unsupported)}")
     for field, category in (("unit_id", "unit"), ("city_id", "city"),
                             ("origin_city_id", "city"), ("destination_city_id", "city")):
-        if field in action and (category, action[field]) not in id_coords:
+        if (field in action and not (actor_schema == ACTOR_V16
+                and kind == 'assign_governor' and field == 'city_id')
+                and (category, action[field]) not in id_coords):
             raise NotImplementedError(f"{field} does not resolve to an observed entity")
-    if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15) and 'district_id' in action:
+    if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16) and 'district_id' in action:
         _require(('district', action['district_id']) in id_coords,
                  'district action lacks its public source geometry')
-    vector = [float(name == "kind:" + kind) for name in feature_names[:len(action_kinds)]]
+    vector = [float(name == "kind:" + feature_kind) for name in feature_names[:len(action_kinds)]]
     coords = [None, None, None, None]
     source_x, source_y = action.get("source_x"), action.get("source_y")
     if source_x is None and "x0" in action:
@@ -604,11 +638,11 @@ def _action_vector(action: dict, obs: dict, id_coords: dict, *, research_choice=
         target_x, target_y = citizen_choice['target']
     if source_x is None and "unit_id" in action:
         source_x, source_y = id_coords[("unit", action["unit_id"])]
-    if source_x is None and "city_id" in action:
+    if source_x is None and "city_id" in action and not (actor_schema == ACTOR_V16 and kind == 'assign_governor'):
         source_x, source_y = id_coords[("city", action["city_id"])]
     if source_x is None and "origin_city_id" in action:
         source_x, source_y = id_coords[("city", action["origin_city_id"])]
-    if source_x is None and actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15) and 'district_id' in action:
+    if source_x is None and actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16) and 'district_id' in action:
         source_x, source_y = id_coords[('district', action['district_id'])]
     if target_x is None and "destination_city_id" in action:
         target_x, target_y = id_coords[("city", action["destination_city_id"])]
@@ -664,16 +698,16 @@ def _action_vector(action: dict, obs: dict, id_coords: dict, *, research_choice=
         vector.extend(_finite(value, "unit-work feature") for value in features)
     vector.extend(production_public_features(production_choice) if production_choice is not None
                   else [0.0] * len(ACTION_PRODUCTION_FEATURES))
-    if actor_schema in (ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         vector.extend(focus_choice if focus_choice is not None else [0.0] * len(FOCUS_ACTION_FEATURES))
-    if actor_schema in (ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         vector.extend(citizen_choice['features'] if citizen_choice is not None else [0.0] * len(CITIZEN_ACTION_FEATURES))
-    if actor_schema in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         vector.extend(queue_choice if queue_choice is not None else [0.0] * len(QUEUE_ACTION_FEATURES))
-    if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         _require(type(source_bound) is bool, 'source binding flag must be boolean')
         vector.append(float(source_bound))
-    if actor_schema in (ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         if kind == 'move':
             _require(type(movement_choice) is dict and set(movement_choice)=={'known','path_length','arrival_turn'}
                      and movement_choice['known'] is True
@@ -684,18 +718,31 @@ def _action_vector(action: dict, obs: dict, id_coords: dict, *, research_choice=
         else:
             _require(movement_choice is None,'Non-movement candidate carries movement preview features')
             vector.extend([0.0,0.0,0.0])
-    if actor_schema in (ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         from .world_input import action_flags
         vector.extend(action_flags(action))
     return vector
 
 
 def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_schema=None) -> dict:
-    """Encode one complete explicit-action session response using stdlib lists.
+    """Encode a legacy response or a public SessionClient LAN v24 view.
 
     `training_eligible` is always false because the native interface currently
     advertises an incomplete strategic action space.
     """
+    if type(response) is dict and "turn_mode" in response:
+        from . import lan_inputs
+
+        ended = lan_inputs.validate(response)
+        from civ6_host.contracts.network_turn import CAPABILITY_XP2_GOVERNORS_SCHEMA
+        if response['decisions']['schema'] == CAPABILITY_XP2_GOVERNORS_SCHEMA:
+            _require(actor_schema == ACTOR_V16, 'LAN v32 requires explicit actor v16')
+            selected_schema = ACTOR_V16
+        else:
+            _require(actor_schema in (None, ACTOR_V15, ACTOR_V16),
+                     "LAN v24-v31 supports actor v15 by default or explicit actor v16")
+            selected_schema = ACTOR_V16 if actor_schema == ACTOR_V16 else ACTOR_V15
+        return _encode_public_frame(response, vocabulary, selected_schema, ended, lan=lan_inputs)
     _require(type(response) is dict and set(response) == _RESPONSE_KEYS,
              "only the complete explicit-action response envelope is accepted")
     # Both native protocols publish the current actor's observation/menu.
@@ -718,15 +765,26 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
         if flag in outcome:
             _require(type(outcome[flag]) is bool, f"outcome.{flag} must be boolean")
             ended = ended or outcome[flag]
+    return _encode_public_frame(response, vocabulary, actor_schema, ended)
+
+
+def _encode_public_frame(response, vocabulary, actor_schema, ended, *, lan=None):
+    _require(type(vocabulary) is ContentVocabulary, "a frozen ContentVocabulary is required")
     obs = response["observation"]
-    _require(type(obs) is dict and set(obs) == _OBS_KEYS and obs["schema"] == _PLAYER_OBS_SCHEMA,
+    display_projection = lan is not None and lan.is_display(response)
+    observation_schema = _PLAYER_OBS_SCHEMA
+    if display_projection:
+        from civ6_host.contracts.player_display import PUBLIC_OBSERVATION_SCHEMA
+        observation_schema = PUBLIC_OBSERVATION_SCHEMA
+    _require(type(obs) is dict and set(obs) == _OBS_KEYS and obs["schema"] == observation_schema,
              "unsupported player observation")
     pid, width, height = obs["player_id"], obs["width"], obs["height"]
     _require(type(pid) is int and 0 <= pid <= 63 and type(width) is int and type(height) is int
              and width > 0 and height > 0 and width * height <= 16384, "invalid observation dimensions")
     _require(type(obs["turn"]) is int and obs["turn"] >= 0, "invalid observation turn")
     decisions = response["decisions"]
-    _require(type(decisions) is dict and decisions.get("schema") in
+    allow_unchanged = _policy_reconfirm_enabled(decisions) if lan is not None else False
+    _require(lan is not None or type(decisions) is dict and decisions.get("schema") in
              (_DECISIONS_SCHEMA, _DECISIONS_SCHEMA_972, _DECISIONS_SCHEMA_980,
               _DECISIONS_SCHEMA_982, _DECISIONS_SCHEMA_983, _DIPLOMACY_SCHEMA_987, _DECISIONS_SCHEMA_988, _DECISIONS_SCHEMA_989, _DECISIONS_SCHEMA_990, _DECISIONS_SCHEMA_999, _DECISIONS_SCHEMA_1000, _CITY_MANAGEMENT_SCHEMA),
              "unsupported native decisions catalogue")
@@ -734,39 +792,48 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
              and decisions.get("episode_id") == response["episode_id"]
              and decisions.get("game_generation") == response["game_generation"]
              and decisions.get("sequence") == response["sequence"], "decisions boundary mismatch")
-    has_management = decisions['schema'] == _CITY_MANAGEMENT_SCHEMA
-    has_focus = decisions["schema"] in (_DECISIONS_SCHEMA_1000, _CITY_MANAGEMENT_SCHEMA)
+    has_management = (decisions['schema'] == _CITY_MANAGEMENT_SCHEMA if lan is None
+                      else decisions.get('citizen_catalogs') is not None)
+    has_focus = (decisions["schema"] in (_DECISIONS_SCHEMA_1000, _CITY_MANAGEMENT_SCHEMA) if lan is None
+                 else decisions.get('city_focus_catalogs') is not None)
+    # Host-validated LAN catalogues retain their network-capability schema in
+    # the live response. The frozen city indexers consume this narrow adapter
+    # view, never a rewritten or serialized legacy decision frame.
+    city_decisions = lan.city_controls_for_actor(decisions) if lan is not None else decisions
     if actor_schema is None: actor_schema = ACTOR_V8 if has_management else ACTOR_V7 if has_focus else ACTOR_V6
     entity_names, action_names = actor_feature_names(actor_schema)
-    _require(not has_focus or actor_schema in (ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15),
+    _require(not has_focus or actor_schema in (ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16),
              "schema1000 requires actor v7; dropping its focus choices is forbidden")
-    _require(not has_management or actor_schema in (ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15),
+    _require(not has_management or actor_schema in (ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16),
              'Grouped city management requires actor v8; dropping citizen choices is forbidden')
-    _require(has_management or 'citizen_catalogs' not in decisions,
+    _require(lan is not None or has_management or 'citizen_catalogs' not in decisions,
              'Legacy decisions cannot carry citizen state')
-    _require(has_focus or "city_focus_catalogs" not in decisions,
+    _require(lan is not None or has_focus or "city_focus_catalogs" not in decisions,
              "legacy decisions cannot carry focus state")
     queue_catalogs = decisions.get('production_queues')
     queue_actions = any(type(row) is dict and type(row.get('action')) is dict
                         and row['action'].get('kind') in QUEUE_ACTION_KINDS
                         for row in decisions.get('candidates', []))
-    if actor_schema not in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15) and type(queue_catalogs) is list:
+    if actor_schema not in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16) and type(queue_catalogs) is list:
         _require(not any(type(row) is dict and (row.get('enabled') is True or 'schema' in row) for row in queue_catalogs),
                  'Enabled production queues require explicit actor v9; dropping queue state is forbidden')
     queues = {'locations': [], 'candidates': {}}
-    if actor_schema in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if lan is not None:
+        queues = lan.queues(decisions, obs["cities"])
+    elif actor_schema in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         _require(queue_catalogs is not None or not queue_actions,
                  'Actor v9 queue actions require the public ordered queue catalogs')
         if queue_catalogs is not None:
             queues = validate_production_queues(decisions, obs, ended=ended)
-    focus = validate_city_focus(decisions, obs, ended=ended) if has_focus else {"cities": {}, "candidates": {}}
+    focus = validate_city_focus(city_decisions, obs, ended=ended) if has_focus else {"cities": {}, "candidates": {}}
     is_diplomacy = decisions["schema"] == _DIPLOMACY_SCHEMA_987
     dialogue = (validate_diplomacy(decisions, obs, ended=ended,
-                 allow_world_input_continuation=(actor_schema in (ACTOR_V13, ACTOR_V14, ACTOR_V15)),
-                 allow_unnamed_response=(actor_schema in (ACTOR_V13, ACTOR_V14, ACTOR_V15)))
+                 allow_world_input_continuation=(actor_schema in (ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16)),
+                 allow_unnamed_response=(actor_schema in (ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16)))
                 if is_diplomacy else None)
-    if "policies" in decisions:
-        raw_policy_slots = _require_policy_catalog(decisions["policies"], pid, obs["turn"])
+    if "policies" in decisions and (lan is None or decisions['policies'] is not None):
+        raw_policy_slots = _require_policy_catalog(decisions["policies"], pid, obs["turn"],
+                                                   allow_unchanged=allow_unchanged)
         policy_slots = copy.deepcopy(raw_policy_slots)
     else:
         # Older diagnostic fixtures predate publication of the policy menu.
@@ -781,25 +848,47 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
         vocabulary.lookup("policy.hash", option["hash"]),
         vocabulary.lookup("policy.type", option["policy_type"]),
     ] for option in row["options"]] for row in policy_slots]
-    player_map = decisions.get("player_map")
-    _validate_player_map(player_map, obs)
-    management = (validate_city_management(decisions, obs, player_map, ended=ended) if has_management
+    if lan is not None:
+        player_map = {key: obs[key] for key in ("player_id", "turn", "width", "height", "plots")}
+    else:
+        player_map = decisions.get("player_map")
+        _validate_player_map(player_map, obs)
+    management = (validate_city_management(city_decisions, obs, player_map, ended=ended) if has_management
                   else {'locations': [], 'candidates': {}})
-    bindings = build_source_bindings(decisions, obs, ended=ended) if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15) else None
+    bindings = build_source_bindings(decisions, obs, ended=ended) if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16) else None
+    governor_catalogue = decisions.get('governors') if actor_schema == ACTOR_V16 else None
+    if actor_schema == ACTOR_V16:
+        from .action_bindings import bind_governor_candidates
+        bindings = bind_governor_candidates(bindings, decisions, governor_catalogue)
     candidates = decisions.get('candidates')
     _require(type(candidates) is list, 'candidate catalogue must be a list')
     queued_goals, candidate_movement_points = ({}, [[] for _ in candidates])
     world_selected = None
-    if actor_schema in (ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if lan is not None:
+        orders = decisions["queued_orders"]
+        if orders is not None:
+            queued_goals = {
+                row["unit_id"]: (None if row["plot_id"] is None
+                                 else (row["plot_id"] % width, row["plot_id"] // width))
+                for row in orders["units"]
+            }
+    elif actor_schema in (ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         from .movement_information import validate_and_index as validate_movement_information
         queued_goals, candidate_movement_points = validate_movement_information(
             decisions, obs, candidates, ended=ended)
     dialogue_candidate_mask = None
-    if actor_schema == ACTOR_V12:
+    if lan is not None:
+        state = decisions["world_input"]
+        world_selection_known = state is not None
+        world_action_mask = None
+        if state is not None:
+            _require(state["war_prompt"] is None, "LAN war-confirmation projection is unqualified")
+            world_selected = state["selected_unit_id"]
+    elif actor_schema == ACTOR_V12:
         from .world_input import validate_and_index as validate_world_input
         world_selected, world_action_mask, world_selection_known = validate_world_input(
             decisions, obs, candidates, ended=ended, dialogue=dialogue)
-    elif actor_schema in (ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    elif actor_schema in (ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         from .war_confirmation13 import validate_and_project as validate_war_confirmation
         (world_selected, world_action_mask, world_selection_known,
          dialogue, dialogue_candidate_mask) = validate_war_confirmation(
@@ -886,8 +975,13 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
     # the paired value feature is masked until a progress row is published.
     global_mask = [1.0] * 5 + [bit for _ in range((len(GLOBAL_FEATURES) - 5) // 2)
                                for bit in (0.0, 1.0)]
+    if lan is not None and not display_projection:
+        for key in ("science", "culture", "faith"):
+            index = GLOBAL_FEATURES.index(key)
+            global_values[index] = global_mask[index] = 0.0
     yield_display = None
-    public_city_yields = {}
+    public_city_yields = ({city["id"]: city["yields"] for city in obs["cities"]}
+                          if display_projection else {})
     if decisions["schema"] in (_DECISIONS_SCHEMA_982, _DECISIONS_SCHEMA_983, _DIPLOMACY_SCHEMA_987, _DECISIONS_SCHEMA_988, _DECISIONS_SCHEMA_989, _DECISIONS_SCHEMA_990, _DECISIONS_SCHEMA_999, _DECISIONS_SCHEMA_1000, _CITY_MANAGEMENT_SCHEMA):
         from .yield_display982 import public_number, validate as validate_yield_display
         yield_display = validate_yield_display(decisions.get("yield_display"), pid, obs["turn"], obs)
@@ -906,8 +1000,12 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
     else:
         _require("yield_display" not in decisions,
                  "pre-982 decisions schema cannot carry schema-982 yield display")
-    research = decisions.get("research")
-    if not is_diplomacy:
+    if lan is not None:
+        choice = decisions["choice_state"]
+        research = choice["research"] if choice is not None else None
+    else:
+        research = decisions.get("research")
+    if lan is None and not is_diplomacy:
         _require(type(research) is dict and set(research) == set(GLOBAL_CATEGORICAL_FIELDS),
                  "unsupported current research catalog")
     research_info = None
@@ -948,7 +1046,7 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
     else:
         _require("research_info" not in decisions,
                  "pre-983 decisions schema cannot carry schema-983 research information")
-    if decisions["schema"] == _DECISIONS_SCHEMA or is_diplomacy:
+    if lan is not None or decisions["schema"] == _DECISIONS_SCHEMA or is_diplomacy:
         _require("research_progress" not in decisions,
                  "legacy decisions schema cannot carry research progress")
     else:
@@ -1039,7 +1137,14 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
     # Preserve observation entities, keeping those absent feature pairs unknown.
     production_by_city, attacks_by_unit, defense_by_city = {}, {}, {}
     combat_cities = []
-    if not is_diplomacy:
+    if lan is not None:
+        production_by_city = lan.current_production(decisions)
+        combat = decisions["unit_attacks"]
+        if combat is not None:
+            attacks_by_unit = {row["unit_id"]: row for row in combat["units"]}
+            combat_cities = combat["cities"]
+            defense_by_city = {(row["owner"], row["city_id"]): row for row in combat_cities}
+    elif not is_diplomacy:
         production = decisions.get("production")
         _require(type(production) is dict and production.get("player_id") == pid
                  and production.get("game_turn") == obs["turn"] and type(production.get("cities")) is list,
@@ -1106,10 +1211,10 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
             for source in ("damage", "moves", "max_moves", "population"):
                 known = source in row
                 vector.extend([_finite(row[source], category + "." + source) if known else 0.0, float(known)])
-            yields = row.get("yields", {})
+            yields = row.get("yields", {}) if lan is None else {}
             for key in ("food", "production", "gold", "science", "culture", "faith"):
                 known = key in yields
-                if category == "city" and yield_display is not None:
+                if category == "city" and (yield_display is not None or display_projection):
                     city_yields = public_city_yields.get(row["id"])
                     _require(city_yields is not None, "schema-982 city yield display is missing own city")
                     # The raw observation value is cross-checked by the
@@ -1134,7 +1239,8 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
                 (prod.get("progress") if prod else None),
                 (prod.get("turns_left") if prod else None),
                 (prod.get("queue_size") if prod else None),
-                (float(prod["has_production_progress"]) if prod else None),
+                (float(prod["has_production_progress"])
+                 if prod and prod["has_production_progress"] is not None else None),
                 (defense.get("garrison_damage") if defense else None),
                 (defense.get("garrison_max") if defense else None),
                 (defense.get("outer_damage") if defense else None),
@@ -1148,11 +1254,11 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
             for name, value in zip(extra_names, extra_values):
                 known = value is not None
                 vector.extend([_finite(value, category + "." + name) if known else 0.0, float(known)])
-            if actor_schema in (ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+            if actor_schema in (ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
                 vector.extend(focus_entity_features(focus["cities"].get(row["id"]) if category == "city" else None))
-            if actor_schema in (ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+            if actor_schema in (ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
                 vector.extend([0.0] * len(CITIZEN_ENTITY_FEATURES))
-            if actor_schema in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15): vector.extend([0.0] * len(QUEUE_ENTITY_FEATURES))
+            if actor_schema in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16): vector.extend([0.0] * len(QUEUE_ENTITY_FEATURES))
             entities.append(vector)
             entity_keys.append((category, row['id']) if category in ('unit', 'city') else None)
             entity_mask.append(True)
@@ -1194,27 +1300,27 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
         for field in ("garrison_damage", "garrison_max", "outer_damage", "outer_max", "defense_strength"):
             vector.extend([_finite(city[field], "visible_enemy_city." + field), 1.0])
         _require(len(vector) == len(ENTITY_FEATURES), "internal visible-city feature layout differs")
-        if actor_schema in (ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15): vector.extend(focus_entity_features(None))
-        if actor_schema in (ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15): vector.extend([0.0] * len(CITIZEN_ENTITY_FEATURES))
-        if actor_schema in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15): vector.extend([0.0] * len(QUEUE_ENTITY_FEATURES))
+        if actor_schema in (ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16): vector.extend(focus_entity_features(None))
+        if actor_schema in (ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16): vector.extend([0.0] * len(CITIZEN_ENTITY_FEATURES))
+        if actor_schema in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16): vector.extend([0.0] * len(QUEUE_ENTITY_FEATURES))
         entities.append(vector)
         entity_keys.append(None)
         entity_mask.append(True)
         entity_categorical.append([0] * len(ENTITY_CATEGORICAL_FIELDS))
 
-    if actor_schema in (ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         for location in management['locations']:
             city, row = location['city'], location['plot']
             vector = [0.0] * len(ENTITY_FEATURES_V7)
             vector[ENTITY_FEATURES.index('x_norm')] = _norm_coord(row['x'], width)
             vector[ENTITY_FEATURES.index('y_norm')] = _norm_coord(row['y'], height)
             vector.extend(citizen_location_features(city, row, width, height))
-            if actor_schema in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15): vector.extend([0.0] * len(QUEUE_ENTITY_FEATURES))
+            if actor_schema in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16): vector.extend([0.0] * len(QUEUE_ENTITY_FEATURES))
             entities.append(vector); entity_mask.append(True)
             entity_keys.append(None)
             entity_categorical.append([0] * len(ENTITY_CATEGORICAL_FIELDS))
 
-    if actor_schema in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         for location in queues['locations']:
             city, entry = location['city'], location['entry']
             vector = [0.0] * len(ENTITY_FEATURES_V8)
@@ -1226,7 +1332,7 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
             entity_categorical.append([0, vocabulary.lookup('action.category', entry['category']),
                 vocabulary.lookup('action.hash', entry['hash']), vocabulary.lookup('action.index', entry['index'])])
 
-    if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         for vector in entities:
             vector.extend([0.0] * len(DISTRICT_ENTITY_FEATURES))
         for district in bindings['districts']:
@@ -1240,7 +1346,7 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
             entity_keys.append(key)
             id_coords[key] = (district['x'], district['y'])
 
-    if actor_schema in (ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         from .movement_information import GOAL_ENTITY_FEATURES, POINT_ENTITY_FEATURES
         goal_start = len(ENTITY_FEATURES_V10)
         for vector, key in zip(entities, entity_keys):
@@ -1257,7 +1363,7 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
                 vector[goal_start + 1] = 1.0
                 vector[goal_start + 2] = _norm_coord(queued[0], width)
                 vector[goal_start + 3] = _norm_coord(queued[1], height)
-    if actor_schema in (ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         for vector, key in zip(entities, entity_keys):
             vector.extend([float(world_selection_known),
                            float(world_selection_known and key is not None and key[0] == 'unit'
@@ -1266,13 +1372,14 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
                 or len(MOVEMENT_ENTITY_FEATURES) != len(GOAL_ENTITY_FEATURES) + len(POINT_ENTITY_FEATURES)):
             raise ValueError('Movement actor feature contract differs')
 
-    if actor_schema == ACTOR_V15:
-        purchase_quotes = validate_public_purchases(decisions, obs, ended=ended)
+    if actor_schema in (ACTOR_V15, ACTOR_V16):
+        locations = (validate_public_purchases(decisions, obs, ended=ended)["locations"]
+                     if lan is None else lan.purchase_locations(decisions, obs["cities"]))
         for vector in entities:
             vector.extend([0.0] * len(PURCHASE_ENTITY_FEATURES))
         for categories in entity_categorical:
             categories.extend([0] * len(PURCHASE_CATEGORICAL_FIELDS))
-        for location in purchase_quotes['locations']:
+        for location in locations:
             city, offer = location['city'], location['offer']
             vector = [0.0] * len(ENTITY_FEATURES_V14)
             vector[ENTITY_FEATURES.index('x_norm')] = _norm_coord(city['x'], width)
@@ -1283,6 +1390,34 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
             entity_mask.append(True)
             entity_categorical.append([0] * len(ENTITY_CATEGORICAL_FIELDS)
                                       + purchase_entity_categories(offer, vocabulary))
+
+    if actor_schema == ACTOR_V16:
+        from . import governors as governor_inputs
+        # Every old row keeps its V15 values and receives canonical zeros for
+        # the appended governor block. Own city identity categories are added
+        # only after an exact owner+ID join; foreign same-ID rows stay unknown.
+        own_cities = {(city['owner'], city['id']): city for city in obs['cities']
+                      if city['owner'] == pid}
+        for vector in entities:
+            vector.extend([0.0] * len(governor_inputs.ENTITY_FEATURES))
+        purchase_locations_v16 = (lan.purchase_locations(decisions, obs['cities'])
+                                  if lan is not None else locations)
+        purchase_count = len(purchase_locations_v16)
+        prior_categories = entity_categorical[:-purchase_count] if purchase_count else entity_categorical
+        prior_keys = entity_keys[:-purchase_count] if purchase_count else entity_keys
+        for categories, key in zip(prior_categories, prior_keys):
+            city = own_cities.get((pid, key[1])) if key is not None and key[0] == 'city' else None
+            categories.extend(governor_inputs.entity_city_categories(city, vocabulary))
+        for location, categories in zip(purchase_locations_v16,
+                entity_categorical[-purchase_count:] if purchase_count else []):
+            categories.extend(governor_inputs.entity_city_categories(location['city'], vocabulary))
+        rows, categories, keys = governor_inputs.entity_rows(governor_catalogue, vocabulary)
+        for row, cat, key in zip(rows, categories, keys):
+            entities.append([0.0] * len(ENTITY_FEATURES_V15) + row)
+            entity_mask.append(True)
+            entity_categorical.append([0] * len(ENTITY_CATEGORICAL_FIELDS_V15)
+                                      + cat)
+            entity_keys.append(key)
 
     has_trade_action = any(
         type(row) is dict and type(row.get("action")) is dict
@@ -1298,7 +1433,8 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
         for row in candidates
     )
     work_choices = {}
-    if "unit_work" in decisions or has_work_action:
+    if (("unit_work" in decisions if lan is None else decisions.get("unit_work") is not None)
+            or has_work_action):
         work_choices = validate_unit_work(decisions, obs, ended=ended)
     production_choices = {}
     if decisions["schema"] in (_DECISIONS_SCHEMA_988, _DECISIONS_SCHEMA_989, _DECISIONS_SCHEMA_990, _DECISIONS_SCHEMA_999, _DECISIONS_SCHEMA_1000, _CITY_MANAGEMENT_SCHEMA):
@@ -1315,7 +1451,7 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
         _require(type(cid) is str and bool(cid), "candidate ID missing")
         candidate_ids.append(cid)
         action = candidate["action"]
-        if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+        if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
             _require('target_type' not in action or action.get('kind') == 'upgrade_unit',
                      'Upgrade identity on a non-upgrade action')
             _require('individual' not in action or action.get('kind') == 'recruit_great_person',
@@ -1332,7 +1468,7 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
             _require("policies" in decisions and decisions["policies"]["reason"] == "available"
                      and action.get("slots") == policy_slots,
                      "policy candidate does not match the available public catalogue")
-            _require(bool(valid_next_hashes(policy_slots, [])),
+            _require(bool(valid_next_hashes(policy_slots, [], allow_unchanged=allow_unchanged)),
                      "policy candidate has no legal changed completion")
             policy_action_index = len(candidate_features)
         research_choice = None
@@ -1343,7 +1479,7 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
                      "research/civic candidate has no matching published choice row")
         movement_points = candidate_movement_points[len(candidate_features)]
         movement_choice = (dict(known=True, path_length=len(movement_points), arrival_turn=movement_points[-1][2])
-                           if actor_schema in (ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15) and action.get('kind') == 'move' else None)
+                           if actor_schema in (ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16) and action.get('kind') == 'move' else None)
         candidate_features.append(_action_vector(action, obs, id_coords,
                                                  research_choice=research_choice,
                                                  trade_choice=trade_choices.get(cid),
@@ -1355,10 +1491,24 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
                                                  source_bound=bindings['sources'][cid] is not None if bindings else False,
                                                  focus_choice=focus["candidates"].get(cid),
                                                  movement_choice=movement_choice, actor_schema=actor_schema))
-        action_categorical.append([
-            vocabulary.lookup("action." + field, action[field]) if field in action else 0
-            for field in categorical_fields
-        ])
+        if actor_schema == ACTOR_V16:
+            from . import governors as governor_inputs
+            extra = (governor_inputs.action_features(action, governor_catalogue,
+                     observation=obs, city_yields=public_city_yields, width=width, height=height)
+                     if action.get('kind') in GOVERNOR_ACTION_KINDS else [0.0] * len(GOVERNOR_ACTION_FEATURES))
+            candidate_features[-1].extend(extra)
+            governor_categories = dict(zip(GOVERNOR_ACTION_CATEGORICAL_FIELDS,
+                governor_inputs.action_categorical_values(action, vocabulary)))
+            action_categorical.append([
+                governor_categories[field] if field in governor_categories else
+                vocabulary.lookup("action." + field, action[field]) if field in action else 0
+                for field in categorical_fields
+            ])
+        else:
+            action_categorical.append([
+                vocabulary.lookup("action." + field, action[field]) if field in action else 0
+                for field in categorical_fields
+            ])
     # Feature rows and masks keep all legal candidates, including an empty set.
     result = {
         "map": channels,
@@ -1381,6 +1531,7 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
         "vocabulary_serialized": vocabulary.serialize(),
         "candidate_ids": candidate_ids,
         "policy_catalog": {"slots": policy_slots, "prior_tokens": policy_prior_tokens,
+                           "allow_unchanged": allow_unchanged,
                            "option_tokens": policy_option_tokens},
         "policy_action_index": policy_action_index,
         "dialogue": dialogue,
@@ -1410,18 +1561,18 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
             "No historical fog memory, complete player state, or complete strategic action space is claimed.",
         ],
     }
-    if actor_schema in (ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         result.update(actor_schema=actor_schema, entity_features=list(entity_names), action_features=list(action_names))
         result["limitations"].append("City focus retains both public native flags and one UI cycle per yield; legacy views project unknown focus channels as zeros. No arbitrary setter or worker management is represented.")
-    if actor_schema in (ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         result['limitations'][-1] = 'Grouped city management retains every official focus/citizen click. Citizen entities expose geometry, occupation and lock icons; worker/capacity numbers are known only when displayed by the official multi-slot meter. Historical views leave these features unknown. Tutorial gating and complete strategic admission remain separate requirements.'
-    if actor_schema in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         result['limitations'] = [text.replace('production queue entries, complete city yields', 'complete city yields') for text in result['limitations']]
         result['limitations'].append('Queue v9 retains every observed own-city entry in native order, its public formation icons, and every offered append/remove/swap with exact positions. Availability remains diagnostic; native UI gates are not certified by encoding.')
-    if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         result['candidate_source_rows'] = resolve_source_rows(bindings, entity_keys)
         result['limitations'].append('Action v10 binds each action to its own public source token, including independent districts. Upgrade, recruitment and belief identities require the same pinned public content catalogue. These joins do not certify human availability or strategic readiness.')
-    if actor_schema in (ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         from .movement_information import CONTRACT as MOVEMENT_INFORMATION_CONTRACT
         result['movement_information_contract'] = copy.deepcopy(MOVEMENT_INFORMATION_CONTRACT)
         result['limitations'].append('Actor v11 adds each own unit’s public queued goal and complete native route preview for every offered move. Every point retains geometry, turn and order, joined only to its candidate row; the actor has no opaque unit/plot IDs or hidden path data. The new inputs change forward semantics and require a fresh optimizer; native availability and strategic readiness remain separate.')
@@ -1429,7 +1580,7 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
         from .world_input import CONTRACT as WORLD_INPUT_CONTRACT
         result['world_input_contract'] = copy.deepcopy(WORLD_INPUT_CONTRACT)
         result['limitations'].append('Actor v12 adds public WorldInput unit selection, all-map-coordinate click candidates and modal war responses. Identifiers are join-only, map clicks are not pruned by visibility or terrain, and no preview/fog facts are added. UI decisions are represented as ordinary policy steps under the published diagnostic transition granularity.')
-    if actor_schema in (ACTOR_V13, ACTOR_V14, ACTOR_V15):
+    if actor_schema in (ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
         from .world_input import CONTRACT as WORLD_INPUT_CONTRACT
         from .war_confirmation13 import CONTRACT as WAR_CONFIRMATION_CONTRACT
         result['world_input_contract'] = copy.deepcopy(WORLD_INPUT_CONTRACT)
@@ -1445,4 +1596,15 @@ def encode_response(response: dict, *, vocabulary: ContentVocabulary, actor_sche
     if actor_schema == ACTOR_V15:
         result['public_purchases_contract'] = PURCHASE_CONTRACT
         result['limitations'].append('Actor v15 adds all published own-city purchase quotes as public entities, including unaffordable offers. Candidate identities and availability masks are unchanged. Prices come from native catalogues; UI admission and complete gameplay coverage remain separate.')
+    if actor_schema == ACTOR_V16:
+        from .governors import CONTRACT as GOVERNOR_CONTRACT
+        result['governors_contract'] = GOVERNOR_CONTRACT
+        result['public_purchases_contract'] = PURCHASE_CONTRACT
+        result['limitations'].append('Actor v16 retains all public v32 governor candidates and typed governor/promotion identities. Governor and promotion flags come only from the public catalogue; assignment target city traits are populated only for an exact own-city owner+ID join, while foreign cities without public traits remain unknown.')
+    if lan is not None:
+        result["limitations"] = [
+            "LAN v24 uses only the public SessionClient view and its validated candidate order.",
+            "The map contains currently visible plots only. Unpublished or unqualified fields stay unknown.",
+            "LAN v24 declares an incomplete action inventory. Encoding does not certify training readiness.",
+        ]
     return result

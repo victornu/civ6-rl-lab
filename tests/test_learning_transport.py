@@ -2,7 +2,10 @@
 import sys
 import unittest
 import subprocess
+from types import SimpleNamespace
+from unittest.mock import patch
 
+import civ6rl.learning.transport as transport_module
 from civ6rl.learning.transport import MAX_LINE_BYTES, TransportError, WorkerClient
 from civ6rl.learning.wire import MAX_DECODED_BYTES, decode_line, encode_line
 
@@ -36,6 +39,47 @@ for line in sys.stdin:
 '''
 
 
+FAKE_LOCAL_WORKER = r'''
+import json, sys
+if sys.stdin.readline() != "go\n":
+    sys.exit(3)
+for line in sys.stdin:
+    req = json.loads(line)
+    result = {"id": req["id"], "ok": True, "model_status": "untrained",
+              "device": req["device"], "training_eligible": False}
+    sys.stdout.write(json.dumps(result, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+'''
+
+
+class FakeProcessRuntime:
+    def __init__(self, *, fail_job=False):
+        self.events = []
+        self.fail_job = fail_job
+        self.kernel = SimpleNamespace(CloseHandle=self._close_handle)
+
+    def job(self, process, limit):
+        self.events.append(("job", limit, process.pid))
+        if self.fail_job:
+            raise OSError("job setup failed")
+        return "fake-job-handle"
+
+    def memory(self, handle):
+        self.events.append(("memory", handle))
+        return {"private_bytes": 1}
+
+    def _close_handle(self, handle):
+        self.events.append(("close", handle))
+        return True
+
+
+def local_client(*, runtime=None, memory_limit=64 * 1024 * 1024):
+    return WorkerClient([sys.executable, "-u", "-c", FAKE_LOCAL_WORKER],
+                        total_timeout=10.0,
+                        local_memory_limit_bytes=memory_limit,
+                        local_process_runtime=runtime)
+
+
 def response(candidate="c1"):
     return {"episode_id": "ep", "sequence": 1,
             "observation": {"player_id": 1},
@@ -66,6 +110,60 @@ def client(mode, timeout=2.0):
 
 
 class LearningTransportTests(unittest.TestCase):
+    def test_runtime_without_memory_limit_is_rejected_before_spawn(self):
+        runtime = FakeProcessRuntime()
+        with patch.object(transport_module.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(ValueError, "requires local_memory_limit_bytes"):
+                WorkerClient([sys.executable, "-c", "pass"], local_process_runtime=runtime)
+        popen.assert_not_called()
+
+    def test_invalid_injected_runtime_is_rejected_before_spawn(self):
+        with patch.object(transport_module.os, "name", "nt"):
+            with patch.object(transport_module.subprocess, "Popen") as popen:
+                with self.assertRaisesRegex(ValueError, "job, memory, and kernel.CloseHandle"):
+                    WorkerClient([sys.executable, "-c", "pass"],
+                                 local_memory_limit_bytes=64 * 1024 * 1024,
+                                 local_process_runtime=object())
+        popen.assert_not_called()
+
+    def test_injected_runtime_contains_worker_and_closes_job(self):
+        runtime = FakeProcessRuntime()
+        worker = local_client(runtime=runtime)
+        worker.initialize('{"version":"v","tokens":[]}', device="cpu", seed=1)
+        self.assertIs(runtime, worker._windows)
+        worker.close()
+        self.assertIsNotNone(worker._process.poll())
+        self.assertEqual("job", runtime.events[0][0])
+        self.assertIn(("close", "fake-job-handle"), runtime.events)
+        self.assertTrue(any(event[0] == "memory" for event in runtime.events))
+
+    def test_injected_runtime_job_failure_reaps_worker(self):
+        runtime = FakeProcessRuntime(fail_job=True)
+        real_popen = subprocess.Popen
+        spawned = []
+
+        def capture_popen(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            spawned.append(process)
+            return process
+
+        with patch.object(transport_module.subprocess, "Popen", side_effect=capture_popen):
+            with self.assertRaisesRegex(TransportError, "could not contain and start"):
+                local_client(runtime=runtime)
+        self.assertEqual(1, len(spawned))
+        self.assertIsNotNone(spawned[0].poll())
+        self.assertFalse(any(event[0] == "close" for event in runtime.events))
+
+    def test_omitted_runtime_keeps_legacy_native_probe_path(self):
+        runtime = FakeProcessRuntime()
+        legacy = SimpleNamespace(Windows=lambda: runtime)
+        with patch.dict(sys.modules, {"civ6rl.native_probe": legacy}):
+            worker = local_client()
+            worker.initialize('{"version":"v","tokens":[]}', device="cpu", seed=1)
+            self.assertIs(runtime, worker._windows)
+            worker.close()
+        self.assertIn(("close", "fake-job-handle"), runtime.events)
+
     def test_valid_round_trip_and_candidate_identity(self):
         worker = client("ok")
         try:

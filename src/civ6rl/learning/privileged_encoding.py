@@ -150,7 +150,9 @@ def _validate_response(response):
     }
 
 
-def _validate_snapshot(snapshot, response_context, expected_context):
+def _validate_snapshot(snapshot, response_context, expected_context, *, own_gold_projection=None):
+    if own_gold_projection not in (None, "floor"):
+        raise ValueError("Unknown public own-gold projection")
     if type(snapshot) is not dict or set(snapshot) != _SNAPSHOT_FIELDS:
         raise ValueError("privileged snapshot envelope shape differs")
     if snapshot["stage"] != "privileged_critic_snapshot977" or snapshot["schema"] != SNAPSHOT_SCHEMA:
@@ -217,7 +219,11 @@ def _validate_snapshot(snapshot, response_context, expected_context):
     own_player = player_rows.get(response_context["player_id"])
     if own_player is None or "gold" not in own_player:
         raise ValueError("privileged own gold is missing")
-    if not math.isclose(own_player["gold"], response_context["own_gold"], rel_tol=1e-12, abs_tol=1e-9):
+    # The exact sidecar stays intact. Only its cross-check follows the public
+    # channel's declared precision; a raw view retains the original exact join.
+    joined_gold = (math.floor(own_player["gold"]) if own_gold_projection == "floor"
+                   else own_player["gold"])
+    if not math.isclose(joined_gold, response_context["own_gold"], rel_tol=1e-12, abs_tol=1e-9):
         raise ValueError("privileged own gold differs from the public observation")
     return player_rows, unit_counts
 

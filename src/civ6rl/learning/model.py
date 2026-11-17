@@ -76,6 +76,22 @@ def family_prior_logits(logits, kind_features, action_mask):
     return logits - candidate_counts.clamp_min(1).log()
 
 
+def _family_prior_features(candidates, action_names, actor_schema):
+    """Select public kind bits by name for V16, preserving legacy prefix slices."""
+    from .encoding import ACTOR_V16
+    if actor_schema == ACTOR_V16:
+        indices = [index for index, name in enumerate(action_names)
+                   if name.startswith('kind:')]
+        if not indices:
+            raise ValueError('V16 family prior requires named action-kind features')
+        return candidates.index_select(-1, torch.tensor(indices, dtype=torch.long,
+                                                         device=candidates.device))
+    count = sum(name.startswith('kind:') for name in action_names)
+    if not count:
+        raise ValueError('legacy action-kind feature prefix is empty')
+    return candidates[..., :count]
+
+
 def collate(frames: list[dict], device="cpu", *, value_only=False) -> dict:
     """Pad only; never drop an entity, map cell or legal action."""
     if not frames:
@@ -84,7 +100,7 @@ def collate(frames: list[dict], device="cpu", *, value_only=False) -> dict:
         raise ValueError('value_only must be boolean')
     if len({f.get("vocabulary_fingerprint") for f in frames}) != 1:
         raise ValueError("cannot mix content vocabularies in one policy batch")
-    from .encoding import ACTOR_V6, ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, actor_feature_names
+    from .encoding import ACTOR_V6, ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16, actor_feature_names
     schemas = {f.get("actor_schema", ACTOR_V6) for f in frames}
     if len(schemas) != 1: raise ValueError("cannot mix actor feature versions")
     actor_schema = next(iter(schemas))
@@ -92,10 +108,10 @@ def collate(frames: list[dict], device="cpu", *, value_only=False) -> dict:
     from .encoding import action_categorical_fields, entity_categorical_fields
     categorical_action_names = action_categorical_fields(actor_schema)
     for frame in frames:
-        if actor_schema in (ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15) and (frame.get("entity_features") != list(entity_names)
+        if actor_schema in (ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16) and (frame.get("entity_features") != list(entity_names)
                 or frame.get("action_features") != list(action_names)):
             raise ValueError("versioned frame feature layout metadata differs")
-        if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15) and (frame.get('action_categorical_fields') != list(categorical_action_names)
+        if actor_schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16) and (frame.get('action_categorical_fields') != list(categorical_action_names)
                 or any(type(row) is not list or len(row) != len(categorical_action_names)
                        for row in frame.get('action_categorical', []))
                 or len(frame.get('action_categorical', [])) != len(frame['candidates'])):
@@ -104,13 +120,13 @@ def collate(frames: list[dict], device="cpu", *, value_only=False) -> dict:
             from .world_input import CONTRACT as WORLD_INPUT_CONTRACT
             if frame.get('world_input_contract') != WORLD_INPUT_CONTRACT:
                 raise ValueError('v12 frame lacks public WorldInput contract metadata')
-        if actor_schema in (ACTOR_V13, ACTOR_V14, ACTOR_V15):
+        if actor_schema in (ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
             from .world_input import CONTRACT as WORLD_INPUT_CONTRACT
             from .war_confirmation13 import CONTRACT as WAR_CONFIRMATION_CONTRACT
             if (frame.get('world_input_contract') != WORLD_INPUT_CONTRACT
                     or frame.get('war_confirmation_contract') != WAR_CONFIRMATION_CONTRACT):
                 raise ValueError('v13/v14 frame lacks the public WorldInput/war-confirmation contract')
-            if actor_schema in (ACTOR_V14, ACTOR_V15):
+            if actor_schema in (ACTOR_V14, ACTOR_V15, ACTOR_V16):
                 from .resource_quantity14 import CONTRACT as RESOURCE_QUANTITY_CONTRACT
                 if frame.get('resource_quantity_contract') != RESOURCE_QUANTITY_CONTRACT:
                     raise ValueError('v14 frame lacks the resource-quantity contract')
@@ -119,7 +135,7 @@ def collate(frames: list[dict], device="cpu", *, value_only=False) -> dict:
                     plane = frame['map'][MAP_CHANNELS.index(channel_name)]
                     if any(value != 0 for row in plane for value in row):
                         raise ValueError('v14 frames must keep reserved resource-quantity channels zero')
-            if actor_schema == ACTOR_V15:
+            if actor_schema in (ACTOR_V15, ACTOR_V16):
                 from .public_purchases import CONTRACT as PURCHASE_CONTRACT
                 entity_categories = entity_categorical_fields(actor_schema)
                 if (frame.get('public_purchases_contract') != PURCHASE_CONTRACT
@@ -128,6 +144,14 @@ def collate(frames: list[dict], device="cpu", *, value_only=False) -> dict:
                         or any(type(row) is not list or len(row) != len(entity_categories)
                                for row in frame.get('entity_categorical', []))):
                     raise ValueError('v15 public purchase observation contract differs')
+            if actor_schema == ACTOR_V16:
+                from .governors import CONTRACT as GOVERNOR_CONTRACT
+                if (frame.get('governors_contract') != GOVERNOR_CONTRACT
+                        or frame.get('entity_categorical_fields') != list(entity_categorical_fields(actor_schema))
+                        or len(frame.get('entity_categorical', [])) != len(frame['entities'])
+                        or any(type(row) is not list or len(row) != len(entity_categorical_fields(actor_schema))
+                               for row in frame.get('entity_categorical', []))):
+                    raise ValueError('v16 governor observation contract differs')
         elif 'dialogue_candidate_mask' in frame:
             raise ValueError('only v13/v14 frames may carry a modal dialogue candidate mask')
         if (any(len(row) != len(entity_names) for row in frame["entities"])
@@ -165,7 +189,7 @@ def collate(frames: list[dict], device="cpu", *, value_only=False) -> dict:
             raise ValueError('movement point routes differ from candidate rows')
         if any(type(points) is not list or len(points)>16384 for points in routes):
             raise ValueError('movement path exceeds the complete native plot bound')
-        if actor_schema in (ACTOR_V11,ACTOR_V12,ACTOR_V13, ACTOR_V14, ACTOR_V15):
+        if actor_schema in (ACTOR_V11,ACTOR_V12,ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
             from .movement_information import CONTRACT as MOVEMENT_INFORMATION_CONTRACT
             if frame.get('movement_information_contract') != MOVEMENT_INFORMATION_CONTRACT:
                 raise ValueError('v11 frame lacks public movement-information contract metadata')
@@ -187,7 +211,7 @@ def collate(frames: list[dict], device="cpu", *, value_only=False) -> dict:
         if any(type(x) is not bool for x in f["action_mask"] + f["entity_mask"]):
             raise ValueError("masks must contain Booleans")
         source_rows = f.get("candidate_source_rows")
-        if actor_schema in (ACTOR_V10,ACTOR_V11,ACTOR_V12,ACTOR_V13, ACTOR_V14, ACTOR_V15):
+        if actor_schema in (ACTOR_V10,ACTOR_V11,ACTOR_V12,ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
             if (type(source_rows) is not list or len(source_rows) != len(f['candidates'])
                     or any(type(row) is not int or row < -1 or row >= len(f['entities']) for row in source_rows)):
                 raise ValueError('v10 candidate source rows differ from candidate layout')
@@ -201,7 +225,7 @@ def collate(frames: list[dict], device="cpu", *, value_only=False) -> dict:
                 out['candidate_source_rows'][i, :len(source_rows)] = torch.tensor(source_rows, dtype=torch.long)
         elif source_rows is not None and (type(source_rows) is not list or any(row != -1 for row in source_rows)):
             raise ValueError('legacy frames cannot contain candidate source bindings')
-        if actor_schema in (ACTOR_V11,ACTOR_V12,ACTOR_V13, ACTOR_V14, ACTOR_V15):
+        if actor_schema in (ACTOR_V11,ACTOR_V12,ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
             from .encoding import ACTION_FEATURES_V10
             known_index=action_names.index('movement_preview_known')
             length_index=action_names.index('movement_path_length')
@@ -379,12 +403,13 @@ class RecurrentPolicy(nn.Module):
         if config.candidate_family_prior not in (None, FAMILY_PRIOR):
             raise ValueError('unknown candidate family prior')
         if config.candidate_family_prior is not None:
-            from .encoding import ACTOR_V14, ACTOR_V15, actor_feature_names
-            if actor_schema_for_config(config) not in (ACTOR_V14, ACTOR_V15):
-                raise ValueError('family prior requires the explicit V14/V15 actor')
-            names = actor_feature_names(actor_schema_for_config(config))[1]
+            from .encoding import ACTOR_V14, ACTOR_V15, ACTOR_V16, actor_feature_names
+            actor_schema = actor_schema_for_config(config)
+            if actor_schema not in (ACTOR_V14, ACTOR_V15, ACTOR_V16):
+                raise ValueError('family prior requires the explicit V14/V15/V16 actor')
+            names = actor_feature_names(actor_schema)[1]
             kinds = tuple(name for name in names if name.startswith('kind:'))
-            if names[:len(kinds)] != kinds:
+            if actor_schema != ACTOR_V16 and names[:len(kinds)] != kinds:
                 raise ValueError('public action kind feature layout differs')
         self.config = config
         h, s, cat = config.hidden_size, config.spatial_size, config.category_size
@@ -456,13 +481,13 @@ class RecurrentPolicy(nn.Module):
         if (batch['entities'].shape[-1] != self.config.entity_features
                 or batch['candidates'].shape[-1] != self.config.action_features):
             raise ValueError('batch dimensions differ from actor; explicit version migration required')
-        from .encoding import ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, actor_feature_names
+        from .encoding import ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16, actor_feature_names
         schema = actor_schema_for_config(self.config)
         source_rows = batch['candidate_source_rows']
         if (source_rows.dtype != torch.long or source_rows.shape != batch['candidates'].shape[:2]
                 or (source_rows < -1).any()):
             raise ValueError('candidate source row tensor differs from actor contract')
-        if schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15):
+        if schema in (ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
             entity_names, action_names = actor_feature_names(schema)
             max_entities = batch['entities'].shape[1]
             if (source_rows >= max_entities).any():
@@ -524,7 +549,7 @@ class RecurrentPolicy(nn.Module):
             # fabricating an available action or constructing an empty policy.
             return None, self.value(hidden).squeeze(-1), (hidden, cell)
         action = self.candidate(torch.cat((self._scale(batch["candidates"]), self._categories(batch["action_categorical"])), -1))
-        if schema in (ACTOR_V11,ACTOR_V12,ACTOR_V13, ACTOR_V14, ACTOR_V15):
+        if schema in (ACTOR_V11,ACTOR_V12,ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
             points=batch['movement_points'];point_mask=batch['movement_point_mask'];point_rows=batch['movement_candidate_rows']
             if (points.dtype!=torch.float32 or points.ndim!=3 or points.shape[0]!=action.shape[0]
                     or points.shape[2]!=4 or point_mask.dtype!=torch.bool
@@ -557,7 +582,7 @@ class RecurrentPolicy(nn.Module):
             if (batch['movement_point_mask'].any() or batch['movement_candidate_rows'].ne(-1).any()
                     or batch['movement_points'].ne(0).any()):
                 raise ValueError('legacy actor cannot consume movement preview points')
-        if schema in (ACTOR_V10,ACTOR_V11,ACTOR_V12,ACTOR_V13, ACTOR_V14, ACTOR_V15):
+        if schema in (ACTOR_V10,ACTOR_V11,ACTOR_V12,ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16):
             bound_rows = source_rows.clamp_min(0)
             source_token = entity_tokens.gather(1, bound_rows.unsqueeze(-1).expand(-1, -1, entity_tokens.shape[-1]))
             action = action + source_token * source_rows.ge(0).unsqueeze(-1)
@@ -572,9 +597,9 @@ class RecurrentPolicy(nn.Module):
         context, _ = self.entity_attention(action, tokens, tokens, key_padding_mask=padding, need_weights=False)
         logits = self.score(torch.tanh(action + context + self.query(hidden).unsqueeze(1))).squeeze(-1)
         if self.config.candidate_family_prior is not None:
-            kind_count = sum(name.startswith('kind:') for name in action_names)
             logits = family_prior_logits(logits,
-                batch['candidates'][..., :kind_count], batch['action_mask'])
+                _family_prior_features(batch['candidates'], action_names, schema),
+                batch['action_mask'])
         return masked_distribution(logits, batch["action_mask"]), self.value(hidden).squeeze(-1), (hidden, cell)
 
     def _decode_policies(self, hidden, catalog, assignments=None):
@@ -587,12 +612,12 @@ class RecurrentPolicy(nn.Module):
         from .policy_assignments import valid_next_hashes, validate_joint_assignment
         slots = catalog["slots"]
         if assignments is not None:
-            validate_joint_assignment(slots, assignments)
+            validate_joint_assignment(slots, assignments, allow_unchanged=catalog.get("allow_unchanged", False))
         prefix, recurrent = [], hidden
         log_prob = hidden.new_zeros(())
         entropy = hidden.new_zeros(())
         for i, slot in enumerate(slots):
-            allowed = set(valid_next_hashes(slots, prefix))
+            allowed = set(valid_next_hashes(slots, prefix, allow_unchanged=catalog.get("allow_unchanged", False)))
             prior, ordinal, option_tokens = self._policy_tokens(catalog, i)
             options = self.policy_option(option_tokens)
             query = self.policy_query(torch.cat((hidden, recurrent, prior, ordinal)))
@@ -609,7 +634,7 @@ class RecurrentPolicy(nn.Module):
             log_prob = log_prob + dist.log_prob(chosen)
             prefix.append(slot["options"][int(chosen.item())]["hash"])
             recurrent = self.policy_prefix(options[chosen].unsqueeze(0), recurrent.unsqueeze(0)).squeeze(0)
-        validate_joint_assignment(slots, prefix)
+        validate_joint_assignment(slots, prefix, allow_unchanged=catalog.get("allow_unchanged", False))
         return prefix, log_prob, entropy
 
     def _joint_entropy(self, root, hidden, batch):
@@ -651,7 +676,9 @@ class RecurrentPolicy(nn.Module):
             if action == batch["policy_action_indices"][i]:
                 if assignments[i] is None:
                     raise ValueError("policy action requires its joint assignments")
-                validate_joint_assignment(batch["policy_catalogs"][i]["slots"], assignments[i])
+                catalog = batch["policy_catalogs"][i]
+                validate_joint_assignment(catalog["slots"], assignments[i],
+                                          allow_unchanged=catalog.get("allow_unchanged", False))
             elif assignments[i] is not None:
                 raise ValueError("ordinary action cannot have policy assignments")
         root, value, newstate = self(batch, state, reset)
@@ -688,7 +715,7 @@ class PlayerMemory:
 
 
 def actor_schema_for_config(config):
-    from .encoding import ACTOR_V6, ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, actor_feature_names
+    from .encoding import ACTOR_V6, ACTOR_V7, ACTOR_V8, ACTOR_V9, ACTOR_V10, ACTOR_V11, ACTOR_V12, ACTOR_V13, ACTOR_V14, ACTOR_V15, ACTOR_V16, actor_feature_names
     explicit = getattr(config, 'actor_schema', None)
     if explicit is not None:
         entities, actions = actor_feature_names(explicit)
@@ -743,35 +770,38 @@ def checkpoint_payload(model, *, vocabulary=None):
         # checkpoint creates a new config string, so the constant alone would
         # serialize differently despite identical tensor/contract values.
         result['feature_layout']['candidate_family_prior']['id'] = serialized_config['candidate_family_prior']
-    if schema in ("civ6rl.recurrent_policy.v7", "civ6rl.recurrent_policy.v8", "civ6rl.recurrent_policy.v9", "civ6rl.recurrent_policy.v10", "civ6rl.recurrent_policy.v11", "civ6rl.recurrent_policy.v12", "civ6rl.recurrent_policy.v13", "civ6rl.recurrent_policy.v14", "civ6rl.recurrent_policy.v15"):
+    if schema in ("civ6rl.recurrent_policy.v7", "civ6rl.recurrent_policy.v8", "civ6rl.recurrent_policy.v9", "civ6rl.recurrent_policy.v10", "civ6rl.recurrent_policy.v11", "civ6rl.recurrent_policy.v12", "civ6rl.recurrent_policy.v13", "civ6rl.recurrent_policy.v14", "civ6rl.recurrent_policy.v15", "civ6rl.recurrent_policy.v16"):
         result['feature_layout']['city_focus'] = 'single_ui_cycle_native_public_flags1000_v1'
-    if schema in ('civ6rl.recurrent_policy.v8', 'civ6rl.recurrent_policy.v9', 'civ6rl.recurrent_policy.v10', 'civ6rl.recurrent_policy.v11', 'civ6rl.recurrent_policy.v12', 'civ6rl.recurrent_policy.v13', 'civ6rl.recurrent_policy.v14','civ6rl.recurrent_policy.v15'):
+    if schema in ('civ6rl.recurrent_policy.v8', 'civ6rl.recurrent_policy.v9', 'civ6rl.recurrent_policy.v10', 'civ6rl.recurrent_policy.v11', 'civ6rl.recurrent_policy.v12', 'civ6rl.recurrent_policy.v13', 'civ6rl.recurrent_policy.v14','civ6rl.recurrent_policy.v15','civ6rl.recurrent_policy.v16'):
         from .city_management import FEATURE_CONTRACT
         result['feature_layout']['city_management'] = FEATURE_CONTRACT
-    if schema in ('civ6rl.recurrent_policy.v9', 'civ6rl.recurrent_policy.v10', 'civ6rl.recurrent_policy.v11', 'civ6rl.recurrent_policy.v12', 'civ6rl.recurrent_policy.v13', 'civ6rl.recurrent_policy.v14','civ6rl.recurrent_policy.v15'):
+    if schema in ('civ6rl.recurrent_policy.v9', 'civ6rl.recurrent_policy.v10', 'civ6rl.recurrent_policy.v11', 'civ6rl.recurrent_policy.v12', 'civ6rl.recurrent_policy.v13', 'civ6rl.recurrent_policy.v14','civ6rl.recurrent_policy.v15','civ6rl.recurrent_policy.v16'):
         from .production_queue import FEATURE_CONTRACT, SOURCE_SHA256, CATALOG_SCHEMA
         result['feature_layout']['production_queue'] = dict(contract=FEATURE_CONTRACT,
             source_sha256=SOURCE_SHA256, catalog_schema=CATALOG_SCHEMA)
-    if schema in ('civ6rl.recurrent_policy.v10','civ6rl.recurrent_policy.v11','civ6rl.recurrent_policy.v12','civ6rl.recurrent_policy.v13','civ6rl.recurrent_policy.v14','civ6rl.recurrent_policy.v15'):
+    if schema in ('civ6rl.recurrent_policy.v10','civ6rl.recurrent_policy.v11','civ6rl.recurrent_policy.v12','civ6rl.recurrent_policy.v13','civ6rl.recurrent_policy.v14','civ6rl.recurrent_policy.v15','civ6rl.recurrent_policy.v16'):
         from .action_bindings import SCHEMA as ACTION_SOURCE_BINDINGS_SCHEMA
         from .action_content import SCHEMA as ACTION_CONTENT_SCHEMA
         result['feature_layout']['action_source_bindings'] = ACTION_SOURCE_BINDINGS_SCHEMA
         result['feature_layout']['action_content'] = ACTION_CONTENT_SCHEMA
-    if schema in ('civ6rl.recurrent_policy.v11','civ6rl.recurrent_policy.v12','civ6rl.recurrent_policy.v13','civ6rl.recurrent_policy.v14','civ6rl.recurrent_policy.v15'):
+    if schema in ('civ6rl.recurrent_policy.v11','civ6rl.recurrent_policy.v12','civ6rl.recurrent_policy.v13','civ6rl.recurrent_policy.v14','civ6rl.recurrent_policy.v15','civ6rl.recurrent_policy.v16'):
         from .movement_information import CONTRACT as MOVEMENT_INFORMATION_CONTRACT
         result['feature_layout']['movement_information'] = MOVEMENT_INFORMATION_CONTRACT
-    if schema in ('civ6rl.recurrent_policy.v12','civ6rl.recurrent_policy.v13','civ6rl.recurrent_policy.v14','civ6rl.recurrent_policy.v15'):
+    if schema in ('civ6rl.recurrent_policy.v12','civ6rl.recurrent_policy.v13','civ6rl.recurrent_policy.v14','civ6rl.recurrent_policy.v15','civ6rl.recurrent_policy.v16'):
         from .world_input import CONTRACT as WORLD_INPUT_CONTRACT
         result['feature_layout']['world_input'] = WORLD_INPUT_CONTRACT
     if schema == 'civ6rl.recurrent_policy.v13':
         from .war_confirmation13 import CONTRACT as WAR_CONFIRMATION_CONTRACT
         result['feature_layout']['war_confirmation'] = WAR_CONFIRMATION_CONTRACT
-    if schema in ('civ6rl.recurrent_policy.v14', 'civ6rl.recurrent_policy.v15'):
+    if schema in ('civ6rl.recurrent_policy.v14', 'civ6rl.recurrent_policy.v15', 'civ6rl.recurrent_policy.v16'):
         from .war_confirmation13 import CONTRACT as WAR_CONFIRMATION_CONTRACT
         from .resource_quantity14 import CONTRACT as RESOURCE_QUANTITY_CONTRACT
         result['feature_layout']['war_confirmation'] = WAR_CONFIRMATION_CONTRACT
         result['feature_layout']['resource_quantity'] = RESOURCE_QUANTITY_CONTRACT
-    if schema == 'civ6rl.recurrent_policy.v15':
+    if schema in ('civ6rl.recurrent_policy.v15', 'civ6rl.recurrent_policy.v16'):
         from .public_purchases import CONTRACT as PURCHASE_CONTRACT
         result['feature_layout']['public_purchases'] = PURCHASE_CONTRACT
+    if schema == 'civ6rl.recurrent_policy.v16':
+        from .governors import CONTRACT as GOVERNOR_CONTRACT
+        result['feature_layout']['governors'] = GOVERNOR_CONTRACT
     return result

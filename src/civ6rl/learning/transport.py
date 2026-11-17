@@ -66,6 +66,15 @@ def _encode_line(value: dict, *, extended=False) -> bytes:
         raise TransportError("request wire encoding failed: " + str(exc)[:160]) from exc
 
 
+def _validate_local_process_runtime(runtime) -> None:
+    """Check the caller-owned Windows containment surface before spawning."""
+    kernel = getattr(runtime, "kernel", None)
+    if (not callable(getattr(runtime, "job", None))
+            or not callable(getattr(runtime, "memory", None))
+            or not callable(getattr(kernel, "CloseHandle", None))):
+        raise ValueError("local_process_runtime must provide job, memory, and kernel.CloseHandle")
+
+
 def _identity_and_candidates(response: dict) -> tuple[str, int, int, set[str]]:
     try:
         episode = response["episode_id"]
@@ -99,7 +108,8 @@ class WorkerClient:
 
     def __init__(self, argv: Sequence[str], *, request_timeout: float = 20.0,
                  total_timeout: float = 180.0, max_requests: int = 16,
-                 local_memory_limit_bytes: int | None = None, episode_budget=None,
+                 local_memory_limit_bytes: int | None = None, local_process_runtime=None,
+                 episode_budget=None,
                  campaign_contract=None):
         if not isinstance(argv, Sequence) or isinstance(argv, (str, bytes)) or not argv:
             raise ValueError("argv must be a nonempty argument sequence")
@@ -133,6 +143,10 @@ class WorkerClient:
             if (type(local_memory_limit_bytes) is not int
                     or not MIN_LOCAL_MEMORY_LIMIT_BYTES <= local_memory_limit_bytes <= MAX_LOCAL_MEMORY_LIMIT_BYTES):
                 raise ValueError("local_memory_limit_bytes must be an integer in [64 MiB, 8 GiB]")
+        if local_process_runtime is not None:
+            if local_memory_limit_bytes is None:
+                raise ValueError("local_process_runtime requires local_memory_limit_bytes")
+            _validate_local_process_runtime(local_process_runtime)
         self.max_requests = max_requests
         self._episode_budget = budget
         self._campaign_contract = campaign_contract
@@ -153,6 +167,7 @@ class WorkerClient:
         self.last_exchange_wire = None
         self._stderr = bytearray()
         self._local_memory_limit_bytes = local_memory_limit_bytes
+        self._windows = None
         self._job_handle = None
         self._local_resource_summary = None
         self._stderr_lock = threading.Lock()
@@ -173,8 +188,11 @@ class WorkerClient:
         if local_memory_limit_bytes is not None:
             try:
                 # The local worker waits for this byte line before importing Torch.
-                from ..native_probe import Windows
-                self._windows = Windows()
+                if local_process_runtime is None:
+                    from ..native_probe import Windows
+                    self._windows = Windows()
+                else:
+                    self._windows = local_process_runtime
                 self._job_handle = self._windows.job(self._process, local_memory_limit_bytes)
                 assert self._process.stdin is not None
                 self._process.stdin.write(b"go\n")
@@ -506,6 +524,22 @@ class WorkerClient:
                 self._diagnostic_collection_episode=None
             return result
 
+    @property
+    def diagnostic_collection(self):
+        """Detached budget acknowledged by init, never the unaccepted request."""
+        value = getattr(self, '_diagnostic_collection', None)
+        return None if value is None else json.loads(json.dumps(value))
+
+    @property
+    def collection_seconds_remaining(self):
+        """Reserve the update request and cleanup within the acknowledged wall."""
+        budget = self.diagnostic_collection
+        if budget is None:
+            return None
+        wall = min(self.total_timeout, budget.get('wall_seconds', 120))
+        return max(0., wall - (time.monotonic() - self._started)
+                   - budget.get('request_seconds', self.request_timeout) - 30)
+
     def update_diagnostic(self,records,scenario,*,burn_in=0,epochs=2,privileged_snapshots=None,privileged_context=None):
         return self._update_diagnostic_exchange(
             dict(op='update_diagnostic',records=records,scenario=scenario,burn_in=burn_in,epochs=epochs),
@@ -528,7 +562,8 @@ class WorkerClient:
             collection=getattr(self,'_diagnostic_collection',None)
             if collection is not None:
                 if payload['op']!='update_multiplayer_diagnostic':
-                    raise TransportError('diagnostic collection permits only a multiplayer update')
+                    from .lan_rollout import budgeted_records
+                    budgeted_records(payload['records'],collection)
                 if self._diagnostic_collection_updates>=collection['max_updates']:
                     raise TransportError('diagnostic collection update budget exhausted')
             payload['policy_version']=self.policy_version
@@ -586,6 +621,8 @@ class WorkerClient:
             if expected_context is not None and (result.get('scenario_sha256')!=expected_context
                     or result.get('collection')!=payload['collection']):
                 self._fail_closed();raise TransportError('Multiplayer collection binding differs')
+            if collection is not None and payload['op']=='update_diagnostic' and result.get('collection')!=collection:
+                self._fail_closed();raise TransportError('LAN collection binding differs')
             campaign_contract=getattr(self,'_campaign_contract',None)
             if campaign_contract is not None:
                 try:
@@ -687,7 +724,10 @@ class WorkerClient:
                             or policy_catalog.get("turn") != observation.get("turn")):
                         raise ValueError("candidate policy slots differ from the response catalogue")
                     from .policy_assignments import validate_joint_assignment
-                    validate_joint_assignment(action.get("slots"), assignments)
+                    from .lan_inputs import policy_reconfirmation_allowed
+                    allow_unchanged = policy_reconfirmation_allowed(native_response)
+                    validate_joint_assignment(action.get("slots"), assignments,
+                                              allow_unchanged=allow_unchanged)
                 except (TypeError, ValueError, RuntimeError) as exc:
                     self._fail_closed()
                     raise TransportError("worker returned an invalid or nonmember policy assignment") from exc

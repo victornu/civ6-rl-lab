@@ -13,7 +13,7 @@ from .task_context import encode_task_response, scenario_digest
 from .model import collate, actor_schema_for_config
 from .ppo import generalized_advantages,update
 from .scenario import evaluate_step
-from .action_receipt import verify_applied_action
+from .action_receipt import selected_action_and_assignments,verify_applied_action
 
 
 def _prepare_native_diagnostic(model,optimizer,vocabulary,records,scenario,*,sample_audit,
@@ -21,10 +21,10 @@ def _prepare_native_diagnostic(model,optimizer,vocabulary,records,scenario,*,sam
                              privileged_state=None,privileged_snapshots=None,
                              privileged_context=None,expected_critic_version=None,critic_mode=None,delayed=False,collection_cut=False,
                              discount_unit='player_decision',decision_limit=12,public_continuity_sources=None,
-                             sequence_limit=63):
+                             sequence_limit=63, lan=False):
     if type(sequence_limit) is not int or not 1<=sequence_limit<=256:
         raise ValueError('invalid explicit recurrent sequence bound')
-    recurrent_limit=min(sequence_limit,256 if delayed else 12)
+    recurrent_limit=min(sequence_limit,256 if delayed or lan else 12)
     if type(decision_limit) is not int or not 1<=decision_limit<=recurrent_limit:
         raise ValueError('invalid explicit recurrent decision limit')
     if type(records) is not list or not (1 if delayed else 2)<=len(records)<=decision_limit:
@@ -54,7 +54,11 @@ def _prepare_native_diagnostic(model,optimizer,vocabulary,records,scenario,*,sam
         if any(x is not None for x in (privileged_snapshots,privileged_context,expected_critic_version)):
             raise ValueError('player-only learner cannot receive privileged data')
     else:
-        from .privileged_encoding import encode_privileged_snapshot,PRIVILEGED_SCHEMA,PRIVILEGED_FEATURES
+        from .privileged_encoding import PRIVILEGED_SCHEMA,PRIVILEGED_FEATURES
+        if lan:
+            from .lan_critic import encode_lan_privileged_snapshot as encode_privileged_snapshot
+        else:
+            from .privileged_encoding import encode_privileged_snapshot
         from .privileged_critic import critic_version,update_critic
         if type(privileged_state) is not dict or set(privileged_state)!={'critic','optimizer','version'}:
             raise ValueError('unknown privileged learner state')
@@ -89,6 +93,10 @@ def _prepare_native_diagnostic(model,optimizer,vocabulary,records,scenario,*,sam
     task_digest=scenario_digest(scenario)
     from .skill_context993 import SCHEMA as SKILL_SCHEMA, evaluate_skill_transition,evaluate_public_skill_interval
     public_skill = delayed and public_continuity_sources is not None and scenario.get('schema') == SKILL_SCHEMA
+    if lan:
+        from . import lan_rollout
+        if scenario.get('schema') != SKILL_SCHEMA:
+            raise ValueError('LAN diagnostic requires the public skill contract')
     classify = evaluate_skill_transition if scenario.get('schema') == SKILL_SCHEMA else evaluate_step
     frames=[];actions=[];assignments=[];task_steps=[];old_logps=[];old_values=[];step_discounts=[]
     first=records[0]['before'];identity=(first['episode_id'],first['game_generation'],first['observation']['player_id'])
@@ -96,10 +104,13 @@ def _prepare_native_diagnostic(model,optimizer,vocabulary,records,scenario,*,sam
     for i,record in enumerate(records):
         expected={'before','choice','action_receipt','next_response'} if delayed else {'before','choice','after'}
         if public_skill:expected.add('public_witnesses')
-        if set(record)!=expected:raise ValueError('unknown rollout record fields')
+        if set(record)!=(lan_rollout.RECORD_FIELDS if lan else expected):raise ValueError('unknown rollout record fields')
         before,choice=record['before'],record['choice']
-        receipt=record['action_receipt'] if delayed else record['after']
-        after=record['next_response'] if delayed else record['after']
+        if lan:
+            after=lan_rollout.transition(record)
+        else:
+            receipt=record['action_receipt'] if delayed else record['after']
+            after=record['next_response'] if delayed else record['after']
         if (type(after) is not dict or type(after.get('observation')) is not dict) and not (public_skill and after is None):
             raise ValueError('task update requires actual same-player successor observation')
         if tuple(before[k] for k in ('episode_id','game_generation'))+(before['observation']['player_id'],)!=identity:
@@ -107,14 +118,15 @@ def _prepare_native_diagnostic(model,optimizer,vocabulary,records,scenario,*,sam
         if previous is not None and before!=previous:raise ValueError('noncontiguous recurrent history')
         for key in ('episode_id','game_generation'):
             if after is not None and after[key]!=before[key]:raise ValueError('reset spliced into native trajectory')
-        if (receipt['episode_id']!=before['episode_id'] or receipt['game_generation']!=before['game_generation']
-                or receipt['sequence']!=before['sequence']+1 or receipt['operation']!='act'):
-            raise ValueError('wrong immediate action receipt')
-        if after is not None and (after['observation']['player_id']!=identity[2] or after['operation']!='act'
-                or (after['sequence']<=before['sequence'] if delayed else after['sequence']!=before['sequence']+1)):
-            raise ValueError('wrong player or action successor')
-        if delayed and after is not None and after['sequence']>receipt['sequence'] and scenario.get('schema')==SKILL_SCHEMA and not public_skill:
-            raise ValueError('skill continuity across opponent intervals is not qualified')
+        if not lan:
+            if (receipt['episode_id']!=before['episode_id'] or receipt['game_generation']!=before['game_generation']
+                    or receipt['sequence']!=before['sequence']+1 or receipt['operation']!='act'):
+                raise ValueError('wrong immediate action receipt')
+            if after is not None and (after['observation']['player_id']!=identity[2] or after['operation']!='act'
+                    or (after['sequence']<=before['sequence'] if delayed else after['sequence']!=before['sequence']+1)):
+                raise ValueError('wrong player or action successor')
+            if delayed and after is not None and after['sequence']>receipt['sequence'] and scenario.get('schema')==SKILL_SCHEMA and not public_skill:
+                raise ValueError('skill continuity across opponent intervals is not qualified')
         if choice.get('policy_version')!=expected_policy_version or choice.get('sampling_mode')!='unconditioned_policy_sample':
             raise ValueError('stale or coverage-conditioned behavior policy')
         if choice.get('critic_version')!=expected_critic_version:
@@ -127,7 +139,11 @@ def _prepare_native_diagnostic(model,optimizer,vocabulary,records,scenario,*,sam
         key=(before['episode_id'],before['game_generation'],before['observation']['player_id'],before['sequence'])
         if sample_audit.get(key)!={'before':before,'choice':choice}:
             raise ValueError('rollout differs from the worker actual sampled decisions')
-        assignment=verify_applied_action(before,choice,receipt)
+        # LAN transition() has already joined the complete joint choice to its
+        # native command receipt and immediate applied action. Keep those same
+        # hashes for behavior replay and PPO, rather than scoring only the root.
+        assignment=(selected_action_and_assignments(before,choice)[1] if lan
+                    else verify_applied_action(before,choice,receipt))
         frame=encode_task_response(before,vocabulary=vocabulary,scenario=scenario,completed_decisions=i,
                                    actor_schema=actor_schema)
         index=frame['candidate_ids'].index(choice['candidate_id'])
@@ -135,7 +151,9 @@ def _prepare_native_diagnostic(model,optimizer,vocabulary,records,scenario,*,sam
         if type(outcome.get('terminated')) is not bool or type(outcome.get('truncated')) is not bool:
             raise ValueError('native outcome missing explicit flags')
         # An official result is not invented for this task-specific diagnostic.
-        if public_skill:
+        if lan:
+            step=lan_rollout.task_step(scenario,before,record['successors'],decision_count=i+1)
+        elif public_skill:
             step=evaluate_public_skill_interval(scenario,before,record['public_witnesses'],decision_count=i+1,
                 sources=public_continuity_sources,next_response=after,action_receipt=receipt)
             if after is None and not step['terminated']:
@@ -155,6 +173,9 @@ def _prepare_native_diagnostic(model,optimizer,vocabulary,records,scenario,*,sam
         if elapsed<0:raise ValueError('same-player successor goes backwards in game time')
         step_discounts.append(discount if discount_unit=='player_decision' else discount**elapsed)
         old_logps.append(choice['log_prob']);old_values.append(choice['value']);previous=after
+    if lan and set(sample_audit) != {
+            (*identity, row['before']['sequence']) for row in records}:
+        raise ValueError('LAN update must close every sampled decision')
     if not (task_steps[-1]['terminated'] or task_steps[-1]['truncated']):
         if not collection_cut:raise ValueError('diagnostic update needs a closed task or explicit horizon')
         task_steps[-1]=dict(task_steps[-1],status='truncated',truncated=True,reason='explicit_global_collection_boundary')
@@ -262,15 +283,31 @@ def _validate_excluded_budget_tail(row, row_index, own_length):
 def update_native_diagnostic(model,optimizer,vocabulary,records,scenario,*,sample_audit,
                              expected_policy_version,burn_in=0,epochs=2,discount=.99,
                              privileged_state=None,privileged_snapshots=None,
-                             privileged_context=None,expected_critic_version=None,critic_mode=None):
+                             privileged_context=None,expected_critic_version=None,critic_mode=None,
+                             diagnostic_collection=None):
+    lan = (type(records) is list and bool(records) and type(records[0]) is dict
+           and type(records[0].get('before')) is dict and 'turn_mode' in records[0]['before'])
+    collection = None
+    if diagnostic_collection is not None:
+        from .lan_rollout import budgeted_records
+        collection = budgeted_records(records, diagnostic_collection)
+    decision_limit = 12 if collection is None else collection['max_decisions']
     prepared=_prepare_native_diagnostic(model,optimizer,vocabulary,records,scenario,sample_audit=sample_audit,
         expected_policy_version=expected_policy_version,burn_in=burn_in,epochs=epochs,discount=discount,
         privileged_state=privileged_state,privileged_snapshots=privileged_snapshots,privileged_context=privileged_context,
-        expected_critic_version=expected_critic_version,critic_mode=critic_mode)
+        expected_critic_version=expected_critic_version,critic_mode=critic_mode,
+        lan=lan,collection_cut=lan,decision_limit=decision_limit,
+        sequence_limit=63 if collection is None else decision_limit)
     group=prepared['ppo_group']
-    metrics=update(model,optimizer,**group,epochs=epochs,value_weight=0. if privileged_state is not None else .5)
+    if len(records) > 64:
+        from .ppo import update_grouped
+        metrics=update_grouped(model,optimizer,[group],epochs=epochs,maximum_steps=decision_limit,
+                               value_weight=0. if privileged_state is not None else .5)
+    else:
+        metrics=update(model,optimizer,**group,epochs=epochs,value_weight=0. if privileged_state is not None else .5)
     metrics.update(_fit_critic([prepared],privileged_state,epochs,prepared['report']['critic_mode']))
     report=prepared['report'];report['metrics']=metrics
+    if collection is not None:report['collection']=collection
     if privileged_state is not None:report['critic_version']=privileged_state['version']
     return report
 

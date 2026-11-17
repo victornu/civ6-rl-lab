@@ -198,7 +198,8 @@ def _infer(native_response: dict, runtime, *, scenario=None, completed_decisions
         if selected_action.get("kind") != "policies" or type(assignment) is not list:
             raise ValueError("unexpected_joint_assignment")
         slots = selected_action.get("slots")
-        validate_joint_assignment(slots, assignment)
+        allow_unchanged = frame.get("policy_catalog", {}).get("allow_unchanged", False)
+        validate_joint_assignment(slots, assignment, allow_unchanged=allow_unchanged)
     elif selected_action.get("kind") == "policies":
         raise ValueError("policy_action_missing_joint_assignment")
     # Commit recurrent state only after every inference/result check succeeds.
@@ -232,7 +233,8 @@ def _update_diagnostic(request,runtime):
     collection=getattr(model,'_diagnostic_collection',None)
     if collection is not None:
         if request.get('op','update_diagnostic')!='update_multiplayer_diagnostic':
-            raise ValueError('diagnostic collection permits only a multiplayer update')
+            from .lan_rollout import budgeted_records
+            budgeted_records(request['records'],collection)
         if model._diagnostic_collection_updates>=collection['max_updates']:
             raise ValueError('diagnostic collection update budget exhausted')
     campaign_state=getattr(model,'_campaign_state',None)
@@ -266,6 +268,7 @@ def _update_diagnostic(request,runtime):
               request['scenarios'],request['collection'],**options)
     else:
         context=request['scenario']
+        if collection is not None:options['diagnostic_collection']=collection
         report=update_native_diagnostic(model,optimizer,vocabulary,request['records'],context,
               burn_in=request['burn_in'],**options)
     model._optimizer=optimizer;model._diagnostic_updates+=1
@@ -289,6 +292,8 @@ def _update_diagnostic(request,runtime):
             model._last_update_context['multiplayer']['public_skill_scope']=dict(
                 allow_single_public_skill_group=True,scenario_schema=SKILL_SCHEMA,
                 public_continuity_sources=copy.deepcopy(request['collection']['public_continuity_sources']))
+    elif collection is not None:
+        model._last_update_context['lan_collection']=copy.deepcopy(collection)
     if private is not None:
         model._last_update_context['parent_critic_version']=request['critic_version']
         if critic_mode=='privileged_diagnostic':

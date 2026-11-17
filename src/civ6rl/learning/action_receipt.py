@@ -31,7 +31,10 @@ def selected_action_and_assignments(before: dict, choice: dict) -> tuple[dict, l
             or any(type(value) is not int or not 0 <= value <= 0xffffffff for value in assignments)):
         raise ValueError("policy action requires unsigned joint assignment hashes")
     from .policy_assignments import validate_joint_assignment
-    validated = validate_joint_assignment(action.get("slots"), assignments)
+    from .lan_inputs import policy_reconfirmation_allowed
+    allow_unchanged = policy_reconfirmation_allowed(before)
+    validated = validate_joint_assignment(action.get("slots"), assignments,
+                                          allow_unchanged=allow_unchanged)
     obs = before.get("observation")
     if type(obs) is not dict or type(obs.get("player_id")) is not int or type(obs.get("turn")) is not int:
         raise ValueError("policy receipt lacks native player and turn identity")

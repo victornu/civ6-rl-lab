@@ -19,6 +19,7 @@ DISTRICT_CATALOG_SOURCE = {
 _DISTRICT_FIELDS = {'district_id', 'city_id', 'type_index', 'x', 'y',
                     'complete', 'banner_eligible', 'available', 'targets'}
 _DISTRICT_ACTION_FIELDS = {'kind', 'district_id', 'plot_id', 'x', 'y'}
+_GOVERNOR_KINDS = {'appoint_governor', 'promote_governor', 'assign_governor'}
 
 
 def _require(condition, message):
@@ -125,6 +126,8 @@ Do not serialize those keys into numeric/categorical actor inputs.
             # A trader owns its order even when the action also identifies cities.
             # Check every public owner join; only the acting source is selected.
             for field, kind in (('unit_id', 'unit'), ('city_id', 'city'), ('origin_city_id', 'city')):
+                if action.get('kind') == 'assign_governor' and field == 'city_id':
+                    continue
                 if field in action:
                     identity = _uint(action[field], field)
                     _require((kind, identity) in own, 'Action source is absent from own public roster')
@@ -153,9 +156,15 @@ in the candidate encoder; it must not embed the native key itself.
     rows = {}
     for index, key in enumerate(entity_keys):
         if key is None: continue
-        _require(type(key) is tuple and len(key) == 2 and key[0] in ('unit', 'city', 'district'),
+        _require(type(key) is tuple and len(key) == 2 and key[0] in ('unit', 'city', 'district', 'governor'),
                  'Unqualified source entity key')
-        _uint(key[1], 'encoded source ID')
+        if key[0] == 'governor':
+            _require(type(key[1]) is tuple and len(key[1]) == 2
+                     and type(key[1][0]) is int and 0 <= key[1][0] <= 0x7fffffff
+                     and type(key[1][1]) is int and 0 <= key[1][1] <= 0xffffffff,
+                     'Invalid encoded governor identity')
+        else:
+            _uint(key[1], 'encoded source ID')
         _require(key not in rows, 'Duplicate encoded source entity')
         rows[key] = index
     result = []
@@ -163,3 +172,37 @@ in the candidate encoder; it must not embed the native key itself.
         _require(key is None or key in rows, 'Public action source has no encoded entity row')
         result.append(-1 if key is None else rows[key])
     return result
+
+
+def bind_governor_candidates(bindings, decisions, catalogue):
+    """Bind offered governor actions to their public governor entity rows.
+
+    Consider-titles is a global control and intentionally has no entity source.
+    All identity matching uses the exact index/hash pair from the public v32
+    catalogue; city assignment targets are not treated as acting sources.
+    """
+    _require(type(bindings) is dict and type(bindings.get('sources')) is dict
+             and type(decisions) is dict and type(decisions.get('candidates')) is list,
+             'Governor source binding inputs differ')
+    from civ6_host.contracts.governors import ACTION_FIELDS, validate_catalogue, validate_action
+    if catalogue is None:
+        _require(not any(row['action'].get('kind') in ACTION_FIELDS for row in decisions['candidates']),
+                 'Governor candidates require a public governor catalogue')
+        return bindings
+    validate_catalogue(catalogue, decisions['player_id'], decisions['turn'])
+    governor_ids = {(row['index'], row['hash']) for row in catalogue['governors']}
+    seen = set()
+    for row in decisions['candidates']:
+        action = row['action']
+        if action.get('kind') not in ACTION_FIELDS:
+            continue
+        validate_action(action)
+        candidate_id = row['candidate_id']
+        _require(candidate_id in bindings['sources'] and candidate_id not in seen,
+                 'Governor candidate source identity differs')
+        seen.add(candidate_id)
+        if action['kind'] in _GOVERNOR_KINDS:
+            identity = (action['governor_index'], action['governor_hash'])
+            _require(identity in governor_ids, 'Governor candidate is absent from its public catalogue')
+            bindings['sources'][candidate_id] = ('governor', identity)
+    return bindings

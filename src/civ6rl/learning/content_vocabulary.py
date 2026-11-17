@@ -12,6 +12,7 @@ import sqlite3
 from pathlib import Path
 
 from .encoding import ContentVocabulary, _token
+from .action_content import DATABASE_TYPE_RE
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -81,8 +82,8 @@ def _quoted(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def _db_type(value, label: str) -> str:
-    if type(value) is not str or _TYPE_RE.fullmatch(value) is None:
+def _db_type(value, label: str, *, pattern=_TYPE_RE) -> str:
+    if type(value) is not str or pattern.fullmatch(value) is None:
         raise ContentVocabularySourceError(f"invalid public content type in {label}")
     return value
 
@@ -135,7 +136,7 @@ def _extract_tokens(db) -> tuple[set[str], dict[str, int]]:
         raise ContentVocabularySourceError("Types primary key differs from the pinned contract")
     type_hashes = {}
     for type_value, hash_value in db.execute('SELECT "Type","Hash" FROM "Types"'):
-        type_name = _db_type(type_value, "Types.Type")
+        type_name = _db_type(type_value, "Types.Type", pattern=DATABASE_TYPE_RE)
         if type_name in type_hashes:
             raise ContentVocabularySourceError("duplicate Types.Type")
         type_hashes[type_name] = _db_hash(hash_value, "Types.Hash")
@@ -204,12 +205,14 @@ def _extract_tokens(db) -> tuple[set[str], dict[str, int]]:
 def load_public_content_vocabulary(path: str | Path = DEFAULT_GAMEPLAY_DB, *,
                                    expected_sha256: str | None = None,
                                    source_label: str | None = None,
-                                   include_action_identities: bool = False) -> ContentVocabulary:
+                                   include_action_identities: bool = False,
+                                   gameinfo_evidence_path: str | Path | None = None) -> ContentVocabulary:
     """Read one SHA-pinned gameplay SQLite database in read-only mode.
 
     For the checked-in Base-profile cache snapshot, provenance is verified
     against its pinned manifest. For a supplied database, the caller must pass
     its expected SHA-256; its Base/DLC/save qualification is never inferred.
+    An explicit GameInfo evidence path must still match the built-in digest.
     """
     db_path = Path(path).resolve(strict=True)
     if type(include_action_identities) is not bool:
@@ -227,7 +230,8 @@ def load_public_content_vocabulary(path: str | Path = DEFAULT_GAMEPLAY_DB, *,
     if before != pinned_digest:
         raise ContentVocabularySourceError("gameplay database SHA-256 differs from its pin")
     try:
-        evidence_path = GAMEINFO_EVIDENCE_PATH.resolve(strict=True)
+        evidence_path = (GAMEINFO_EVIDENCE_PATH if gameinfo_evidence_path is None
+                         else Path(gameinfo_evidence_path)).resolve(strict=True)
     except OSError as exc:
         raise ContentVocabularySourceError("pinned GameInfo mapping evidence is unavailable") from exc
     evidence_before = _sha256(evidence_path)
@@ -290,7 +294,8 @@ def load_public_content_vocabulary(path: str | Path = DEFAULT_GAMEPLAY_DB, *,
     }
     if include_action_identities:
         from .action_content import extract_action_content_catalog
-        catalog = extract_action_content_catalog(db_path, expected_sha256=before)
+        catalog = extract_action_content_catalog(db_path, expected_sha256=before,
+                                                  gameinfo_evidence_path=evidence_path)
         for table, namespace in (('Units', 'action.target_type'),
                                  ('GreatPersonIndividuals', 'action.individual')):
             tokens.update(_token(namespace, row['index']) for row in catalog['tables'][table])

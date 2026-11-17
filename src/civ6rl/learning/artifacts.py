@@ -22,8 +22,8 @@ def load_policy_bytes(data,*,sha256,device='cpu'):
         raise ValueError('policy artifact exceeds bound')
     if hashlib.sha256(data).hexdigest()!=sha256:raise ValueError('policy digest differs')
     payload=torch.load(io.BytesIO(data),weights_only=True,map_location='cpu')
-    if payload.get('schema') not in ('civ6rl.recurrent_policy.v6','civ6rl.recurrent_policy.v7','civ6rl.recurrent_policy.v8','civ6rl.recurrent_policy.v9','civ6rl.recurrent_policy.v10','civ6rl.recurrent_policy.v11','civ6rl.recurrent_policy.v12','civ6rl.recurrent_policy.v13','civ6rl.recurrent_policy.v14','civ6rl.recurrent_policy.v15') or payload.get('training_eligible') is not False:
-        raise ValueError('unsupported diagnostic checkpoint; actor requires explicit v6-v14 without implicit migration')
+    if payload.get('schema') not in ('civ6rl.recurrent_policy.v6','civ6rl.recurrent_policy.v7','civ6rl.recurrent_policy.v8','civ6rl.recurrent_policy.v9','civ6rl.recurrent_policy.v10','civ6rl.recurrent_policy.v11','civ6rl.recurrent_policy.v12','civ6rl.recurrent_policy.v13','civ6rl.recurrent_policy.v14','civ6rl.recurrent_policy.v15','civ6rl.recurrent_policy.v16') or payload.get('training_eligible') is not False:
+        raise ValueError('unsupported diagnostic checkpoint; actor requires an explicit version without implicit migration')
     vocabulary=ContentVocabulary.from_serialized(payload['vocabulary'])
     if vocabulary.fingerprint!=payload['vocabulary_sha256']:raise ValueError('vocabulary digest differs')
     config=PolicyConfig(**payload['config'])

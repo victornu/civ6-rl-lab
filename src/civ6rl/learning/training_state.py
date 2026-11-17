@@ -70,16 +70,224 @@ COMPLETED_CAMPAIGN_SUPPORTING_SOURCES_V1 = {
 }
 V14_PARENT_SOURCE_RESTORE = 'v14_parent_source_only_v1'
 PUBLIC_PURCHASE_OBSERVATION_V15 = 'public_purchase_observation_v15'
+PUBLIC_GOVERNORS_V16 = 'public_governors_v16'
 V14_PARENT_JSON_SHA256 = '5cdc2efbecd2afdf2e1b997f9d47c56177768d96bb69a6caff2f2fa398e2b8d8'
 V14_PARENT_ARCHIVE_SHA256 = 'dba5477f2df79577adff755073530fac09042c6bf66fcc19a2c56ebfbb3a1a1e'
 V14_PARENT_LEARNER_SHA256 = '1227a0cea953c0a5c8052c19eb19f0ab47a2a7f5d0c12cc87a390d7066b608fb'
 V14_PARENT_POLICY_SHA256 = '0711124d7a0c302704ce8bd5800e6f77665d04ea10a1dac6ba4c2a3974d79e1d'
-SOURCE_TRANSITIONS = {'bounded_collection_resume_v1': BOUNDED_COLLECTION_RESUME_V1,
+# Source-only transition from the existing LAN player-only diagnostic.
+LAN_CRITIC_SIDECAR_V1 = {
+    'learner.py': '907458d7157f228556f00fd831def04c1aa5c0a0f2f1bac1f57d9179910acd5c',
+    'training_state.py': 'a3c48fcaca926575360fe6a6da77e12bb1df70f5debf389d3c56a02c9823203d',
+    'lan_critic.py': None,
+    'lan_rollout.py': 'dac64bc259960b052e49dfbb019b03219ffe39c136d48213f5055963b1d5630b',
+}
+LAN_PUBLIC_TERMINAL_V1 = {
+    'lan_rollout.py': 'dac64bc259960b052e49dfbb019b03219ffe39c136d48213f5055963b1d5630b',
+    'training_state.py': '8f8f120287c30404b7317a6986b99f2630e2e49af20f08455d31e526a589ec04',
+}
+LAN_DEFENSE_READY_DEADLINE_V1 = {
+    'lan_rollout.py': '8598ded38d2d47a751ab9a204d6fee6278bc563213485b8e1883a5654c15d24d',
+    'training_state.py': '362248b6a539726c1ee20d2462d06397ff801f4a39f75e5b0e45fd82a6d4875b',
+}
+# Exact completed LAN v24 boundaries. The v25 consumer adds explicit joint
+# policy assignments and accepts source-qualified mod policy identifiers.
+# Actor/critic tensors and optimizer layouts stay unchanged. Old trajectories
+# keep their original runtime; these transitions resume at a new episode only.
+LAN_POLICY_ASSIGNMENTS_V25 = {
+    'encoding.py': '2478dd7e90115568ffddb77b8ed2d6364f3a5bd45029f75b3367928238e2b4ee',
+    'lan_inputs.py': '22428b6c9fb595f5b809f439125e574d52765ced0f28528a1137e427e01a503b',
+    'lan_rollout.py': 'dac64bc259960b052e49dfbb019b03219ffe39c136d48213f5055963b1d5630b',
+    'policy_assignments.py': '864f849061fadca9bdbaf3b2ac34047578d97abaa72eea9f3618eef5624ad17f',
+    'training_state.py': '8f8f120287c30404b7317a6986b99f2630e2e49af20f08455d31e526a589ec04',
+}
+LAN_PLAYER_ONLY_POLICY_ASSIGNMENTS_V25 = dict(LAN_POLICY_ASSIGNMENTS_V25, **{
+    'learner.py': '907458d7157f228556f00fd831def04c1aa5c0a0f2f1bac1f57d9179910acd5c',
+    'lan_critic.py': None,
+    'training_state.py': 'a3c48fcaca926575360fe6a6da77e12bb1df70f5debf389d3c56a02c9823203d',
+})
+# Source-only transition for public LAN v28 policy relocation. The exact
+# assignment masks broaden, but actor/critic tensors, optimizer state and RNG
+# remain unchanged; old trajectories retain their original source runtime.
+LAN_POLICY_RELOCATION_V28 = {
+    'lan_inputs.py': 'debc6be1c4a2f7d6b968b7be4b96a86f322bb6b9460f0db70e9b1687854edcbf',
+    'policy_assignments.py': 'f33e616b588d667758650b82ca393c17349b8f8780f95a1380c175691d17d5d7',
+    'training_state.py': 'a0355d1c592863c166e750aed30f97f6f9c13927dcc563cf5fe43519d0ae2aef',
+}
+# v29 permits an unchanged complete assignment only on a fully validated
+# reconfirm catalogue. These exact prior pins are source-only; no tensors,
+# optimizer state, RNG, or retained trajectory runtime are rewritten.
+LAN_POLICY_RECONFIRM_V29 = {
+    'lan_inputs.py': 'fbdc3f4d9554157dbebd4df6e972552b7fb1bb2ae3932e8a48f54f1c61d758ac',
+    'policy_assignments.py': '8371352dfbc143132619872eac2ce4fe11794240906a6727489fe3d4eb933d78',
+    'encoding.py': '576ec6b7892e68b0b8eabb2097f3e58f966a6eae2530d929f88f109e3f931434',
+    'model.py': 'de309529697256bc2efe68438d4c434af47d209adcfa9aa1ae209588ed221de2',
+    'action_receipt.py': '193ff392a17c201ebcb0eb95d324246f00c9450bd9ff8622424ff3157d224284',
+    'worker.py': '9bb985efd561156198ba06bd08d0f9153ff69923a75f84a17e543300d45ea21f',
+    'ppo.py': '5762dcf495d065d10ee22e78bd34093c8431b2a4e563e4c94231c929122323a4',
+    'training_state.py': '10a7935085999ae876d294b1f72b56c66557eff7256fffda542cc12494450016',
+}
+# Faith purchase I/O extends the public quote catalogue while retaining the
+# existing fixed actor layout. This source-only transition is pinned to the
+# exact pre-v30 files captured by the lab; prior trajectories keep their source.
+LAN_FAITH_PURCHASES_V30 = {
+    'lan_inputs.py': '9250fe038e87f5868acce8fbb43035ae9f664741f2f5edc2c8b622f439111ef6',
+    'encoding.py': '83e03f4010e3109f7086e1cff01c0612a968b4bb6937e5cafd18514b18047653',
+    'training_state.py': 'c032b7975b7ca921ca0bf92c559232a5109b890efb03c352b75d0966f12308f6',
+}
+_V24_RECONFIRM_CALLERS = {
+    'model.py': 'de309529697256bc2efe68438d4c434af47d209adcfa9aa1ae209588ed221de2',
+    'action_receipt.py': '193ff392a17c201ebcb0eb95d324246f00c9450bd9ff8622424ff3157d224284',
+    'worker.py': '9bb985efd561156198ba06bd08d0f9153ff69923a75f84a17e543300d45ea21f',
+    'ppo.py': '5762dcf495d065d10ee22e78bd34093c8431b2a4e563e4c94231c929122323a4',
+}
+LAN_PLAYER_ONLY_POLICY_RECONFIRM_V29 = dict(LAN_PLAYER_ONLY_POLICY_ASSIGNMENTS_V25,
+                                            **_V24_RECONFIRM_CALLERS)
+LAN_POLICY_RECONFIRM_V29_FROM_V24 = dict(LAN_POLICY_ASSIGNMENTS_V25,
+                                        **_V24_RECONFIRM_CALLERS)
+# Preserve LAN joint policy hashes through learner replay/PPO. These exact
+# transitions apply only at a completed boundary; old rollout runtimes stay
+# unchanged and actor/critic tensors, optimizers and RNG are not migrated.
+LAN_JOINT_POLICY_LEARNER_V29 = {
+    'learner.py': '9bc2119182352deefa2956839b0da1b615015e053d48c4a723c3944885159015',
+    'training_state.py': '18b54f30f232b13c9c4124ec8abd65f81b53dfeacc78ec049ec35a461ab900d4',
+}
+LAN_PLAYER_ONLY_JOINT_POLICY_LEARNER_V29_FROM_V24 = dict(LAN_PLAYER_ONLY_POLICY_RECONFIRM_V29)
+LAN_JOINT_POLICY_LEARNER_V29_FROM_V24 = dict(LAN_POLICY_RECONFIRM_V29_FROM_V24, **{
+    'learner.py': LAN_JOINT_POLICY_LEARNER_V29['learner.py'],
+})
+LAN_BOUNDED_EPISODE_V29 = {
+    'learner.py': '13721a90a70f72e170b6a4833e3b33e92ce5ba840f3d52789f2024e40c497fcc',
+    'worker.py': '00862185c54216b79170073e50123f0ff00a270aaef94b1c2b4ec03f6bcc671d',
+    'lan_rollout.py': '07cc57c96809915ed7b731b29f79986da7c723c83f0fa8a9f8d6b7828a375ee1',
+    'lan_inputs.py': '59ec0ea8cfca19c0d8ffd4bbe3c848fd53076ceeca291455a19a5bd734ac51c8',
+    'action_receipt.py': '5d8f3a44b1befa9104ba0f25a227615a5986a6c038a0483a529b4e0917b81654',
+    'training_state.py': '7cb6e6cf5298b144a63ee5b0413afeb4d3eb9c9f70075e934512d8153b5c9140',
+}
+# Public display-v2 inputs reuse the frozen actor dimensions. Exact prior
+# pins only; native receipts and historical trajectories are not rewritten.
+LAN_PUBLIC_DISPLAY_V30 = {
+    'skill_task991.py': 'd93b159cb67588298d4c2b2120ad144c7913c47c6d47b0e4b3034ed25af6913b',
+    'encoding.py': '86ad0ce40658edd8db46f169e602d6247481baa3bbcd8091f6437128f3affedc',
+    'lan_critic.py': '66846c2bd9969635ccd8a98ba8066e049ecab82672780629aa5c3a5e3d9790b6',
+    'lan_inputs.py': 'f827a94e1eade2201d560156e6681f8d96ecff7aa4e6cdebe6afb186c3bd141e',
+    'privileged_encoding.py': 'c2ab4778880ec8b131c14931748dd8ff0c7f2ee0f51589d770709f5416956519',
+    'training_state.py': 'da172dfa3396f890e8c01404cee054e24c2fe542a8c44de1119163963e5d8a37',
+}
+LAN_PLAYER_ONLY_PUBLIC_DISPLAY_V30_FROM_V24 = {
+    'skill_task991.py': 'd93b159cb67588298d4c2b2120ad144c7913c47c6d47b0e4b3034ed25af6913b',
+    'action_receipt.py': '193ff392a17c201ebcb0eb95d324246f00c9450bd9ff8622424ff3157d224284',
+    'encoding.py': '2478dd7e90115568ffddb77b8ed2d6364f3a5bd45029f75b3367928238e2b4ee',
+    'lan_critic.py': None,
+    'lan_inputs.py': '22428b6c9fb595f5b809f439125e574d52765ced0f28528a1137e427e01a503b',
+    'lan_rollout.py': 'dac64bc259960b052e49dfbb019b03219ffe39c136d48213f5055963b1d5630b',
+    'learner.py': '907458d7157f228556f00fd831def04c1aa5c0a0f2f1bac1f57d9179910acd5c',
+    'model.py': 'de309529697256bc2efe68438d4c434af47d209adcfa9aa1ae209588ed221de2',
+    'policy_assignments.py': '864f849061fadca9bdbaf3b2ac34047578d97abaa72eea9f3618eef5624ad17f',
+    'ppo.py': '5762dcf495d065d10ee22e78bd34093c8431b2a4e563e4c94231c929122323a4',
+    'privileged_encoding.py': 'c2ab4778880ec8b131c14931748dd8ff0c7f2ee0f51589d770709f5416956519',
+    'training_state.py': 'a3c48fcaca926575360fe6a6da77e12bb1df70f5debf389d3c56a02c9823203d',
+    'worker.py': '9bb985efd561156198ba06bd08d0f9153ff69923a75f84a17e543300d45ea21f',
+}
+LAN_ASYMMETRIC_PUBLIC_DISPLAY_V30_FROM_V24 = {
+    'skill_task991.py': 'd93b159cb67588298d4c2b2120ad144c7913c47c6d47b0e4b3034ed25af6913b',
+    'action_receipt.py': '193ff392a17c201ebcb0eb95d324246f00c9450bd9ff8622424ff3157d224284',
+    'encoding.py': '2478dd7e90115568ffddb77b8ed2d6364f3a5bd45029f75b3367928238e2b4ee',
+    'lan_critic.py': '66846c2bd9969635ccd8a98ba8066e049ecab82672780629aa5c3a5e3d9790b6',
+    'lan_inputs.py': '22428b6c9fb595f5b809f439125e574d52765ced0f28528a1137e427e01a503b',
+    'lan_rollout.py': 'dac64bc259960b052e49dfbb019b03219ffe39c136d48213f5055963b1d5630b',
+    'learner.py': '9bc2119182352deefa2956839b0da1b615015e053d48c4a723c3944885159015',
+    'model.py': 'de309529697256bc2efe68438d4c434af47d209adcfa9aa1ae209588ed221de2',
+    'policy_assignments.py': '864f849061fadca9bdbaf3b2ac34047578d97abaa72eea9f3618eef5624ad17f',
+    'ppo.py': '5762dcf495d065d10ee22e78bd34093c8431b2a4e563e4c94231c929122323a4',
+    'privileged_encoding.py': 'c2ab4778880ec8b131c14931748dd8ff0c7f2ee0f51589d770709f5416956519',
+    'training_state.py': '8f8f120287c30404b7317a6986b99f2630e2e49af20f08455d31e526a589ec04',
+    'worker.py': '9bb985efd561156198ba06bd08d0f9153ff69923a75f84a17e543300d45ea21f',
+}
+# City focus/citizen inputs preserve the frozen actor layout and old trajectories.
+LAN_CITY_CONTROLS_V30 = {
+    'encoding.py': '4f466bcd1d9e73dde37915c0c779ef817cd397bc5fb9879bad23be02c53e24b6',
+    'lan_inputs.py': 'ccc8322a48382a55f8bb1837364e480a448590253f2511c1b988942c20b0daf6',
+    'training_state.py': '1c4190c3b17a1dc39c992a47a96e139c1bb83829abd6dd45134073f4eb4fa490',
+}
+LAN_PLAYER_ONLY_CITY_CONTROLS_V30_FROM_V24 = {
+    'action_receipt.py': '193ff392a17c201ebcb0eb95d324246f00c9450bd9ff8622424ff3157d224284',
+    'encoding.py': '2478dd7e90115568ffddb77b8ed2d6364f3a5bd45029f75b3367928238e2b4ee',
+    'lan_critic.py': None,
+    'lan_inputs.py': '22428b6c9fb595f5b809f439125e574d52765ced0f28528a1137e427e01a503b',
+    'lan_rollout.py': 'dac64bc259960b052e49dfbb019b03219ffe39c136d48213f5055963b1d5630b',
+    'learner.py': '907458d7157f228556f00fd831def04c1aa5c0a0f2f1bac1f57d9179910acd5c',
+    'model.py': 'de309529697256bc2efe68438d4c434af47d209adcfa9aa1ae209588ed221de2',
+    'policy_assignments.py': '864f849061fadca9bdbaf3b2ac34047578d97abaa72eea9f3618eef5624ad17f',
+    'ppo.py': '5762dcf495d065d10ee22e78bd34093c8431b2a4e563e4c94231c929122323a4',
+    'privileged_encoding.py': 'c2ab4778880ec8b131c14931748dd8ff0c7f2ee0f51589d770709f5416956519',
+    'skill_task991.py': 'd93b159cb67588298d4c2b2120ad144c7913c47c6d47b0e4b3034ed25af6913b',
+    'training_state.py': 'a3c48fcaca926575360fe6a6da77e12bb1df70f5debf389d3c56a02c9823203d',
+    'worker.py': '9bb985efd561156198ba06bd08d0f9153ff69923a75f84a17e543300d45ea21f',
+}
+LAN_ASYMMETRIC_CITY_CONTROLS_V30_FROM_V24 = {
+    'action_receipt.py': '193ff392a17c201ebcb0eb95d324246f00c9450bd9ff8622424ff3157d224284',
+    'encoding.py': '2478dd7e90115568ffddb77b8ed2d6364f3a5bd45029f75b3367928238e2b4ee',
+    'lan_critic.py': '66846c2bd9969635ccd8a98ba8066e049ecab82672780629aa5c3a5e3d9790b6',
+    'lan_inputs.py': '22428b6c9fb595f5b809f439125e574d52765ced0f28528a1137e427e01a503b',
+    'lan_rollout.py': 'dac64bc259960b052e49dfbb019b03219ffe39c136d48213f5055963b1d5630b',
+    'learner.py': '9bc2119182352deefa2956839b0da1b615015e053d48c4a723c3944885159015',
+    'model.py': 'de309529697256bc2efe68438d4c434af47d209adcfa9aa1ae209588ed221de2',
+    'policy_assignments.py': '864f849061fadca9bdbaf3b2ac34047578d97abaa72eea9f3618eef5624ad17f',
+    'ppo.py': '5762dcf495d065d10ee22e78bd34093c8431b2a4e563e4c94231c929122323a4',
+    'privileged_encoding.py': 'c2ab4778880ec8b131c14931748dd8ff0c7f2ee0f51589d770709f5416956519',
+    'skill_task991.py': 'd93b159cb67588298d4c2b2120ad144c7913c47c6d47b0e4b3034ed25af6913b',
+    'training_state.py': '8f8f120287c30404b7317a6986b99f2630e2e49af20f08455d31e526a589ec04',
+    'worker.py': '9bb985efd561156198ba06bd08d0f9153ff69923a75f84a17e543300d45ea21f',
+}
+# Envoy v31 I/O retains the v15 tensors. These exact prior sources resume
+# only at a completed boundary; retained trajectories keep their own runtime.
+LAN_ENVOYS_V31 = {'lan_inputs.py': '4897570aadba000d88754c8030ddf318764d101252bb02b318536458c6610c22', 'encoding.py': 'e70fa52bf2b42ec2a81c50fb15a351b87d56f7a178c784b2ee8eaf54e3f22e5e', 'training_state.py': 'ac8f9d4c14ec6f3d879b0ae30ec45402bcaaabf217442eab56b43326a98c2b47'}
+LAN_PLAYER_ONLY_ENVOYS_V31_FROM_V24 = dict(LAN_PLAYER_ONLY_CITY_CONTROLS_V30_FROM_V24)
+LAN_ASYMMETRIC_ENVOYS_V31_FROM_V24 = dict(LAN_ASYMMETRIC_CITY_CONTROLS_V30_FROM_V24)
+
+# The public governor consumer is a new source boundary. V15 restoration and
+# V15->V16 tensor migration are separate explicit choices; old transition names
+# keep their original source contracts.
+LAN_GOVERNORS_V32_FROM_V31 = {'artifacts.py': '1086abafc3528535726ddefa66b8510724625b4cb68c3b8bce98c0079c0a4a5b', 'encoding.py': 'e70fa52bf2b42ec2a81c50fb15a351b87d56f7a178c784b2ee8eaf54e3f22e5e', 'model.py': '70642884259f4ab1e70b63974c3a59201ad4d6127af6a1776b54251ee113ec16', 'action_bindings.py': '69a5775042dd846a7e5cdc21e8360a8e53a34b3c2a6e77666da7eee5e7ce786f', 'lan_inputs.py': 'ad3dfb967abafef7172391049a4c70423f83bd26b258c1896569f5a0a3a8953f', 'training_state.py': 'e71f8d4fe94b69452ec147469f45978858efe5cfff94336e1320d13324b86c2d', 'governors.py': None, 'migrate_actor.py': None}
+LAN_PLAYER_ONLY_GOVERNORS_V32_FROM_V24 = dict(LAN_PLAYER_ONLY_ENVOYS_V31_FROM_V24)
+LAN_ASYMMETRIC_GOVERNORS_V32_FROM_V24 = dict(LAN_ASYMMETRIC_ENVOYS_V31_FROM_V24)
+for _profile in (LAN_PLAYER_ONLY_GOVERNORS_V32_FROM_V24, LAN_ASYMMETRIC_GOVERNORS_V32_FROM_V24):
+    for _name, _digest in LAN_GOVERNORS_V32_FROM_V31.items():
+        _profile.setdefault(_name, _digest)
+
+SOURCE_TRANSITIONS = {
+    'lan_governors_v32_from_v31': LAN_GOVERNORS_V32_FROM_V31,
+    'lan_player_only_governors_v32_from_v24': LAN_PLAYER_ONLY_GOVERNORS_V32_FROM_V24,
+    'lan_asymmetric_governors_v32_from_v24': LAN_ASYMMETRIC_GOVERNORS_V32_FROM_V24,
+    'lan_envoys_v31': LAN_ENVOYS_V31,
+    'lan_player_only_envoys_v31_from_v24': LAN_PLAYER_ONLY_ENVOYS_V31_FROM_V24,
+    'lan_asymmetric_envoys_v31_from_v24': LAN_ASYMMETRIC_ENVOYS_V31_FROM_V24,'bounded_collection_resume_v1': BOUNDED_COLLECTION_RESUME_V1,
                       'bounded_episode_budget_v1': BOUNDED_EPISODE_BUDGET_V1,
                       'bounded_campaign_v1': BOUNDED_CAMPAIGN_V1,
                       'candidate_family_prior_reconfiguration_v1': FAMILY_PRIOR_RECONFIGURATION_V1,
                       'bounded_unresolved_tail_v1': BOUNDED_UNRESOLVED_TAIL_V1,
                       'detached_transition_reuse_v1': DETACHED_TRANSITION_REUSE_V1,
+                      'lan_critic_sidecar_v1': LAN_CRITIC_SIDECAR_V1,
+                      'lan_public_terminal_v1': LAN_PUBLIC_TERMINAL_V1,
+                      'lan_defense_ready_deadline_v1': LAN_DEFENSE_READY_DEADLINE_V1,
+                      'lan_policy_assignments_v25': LAN_POLICY_ASSIGNMENTS_V25,
+                      'lan_player_only_policy_assignments_v25': LAN_PLAYER_ONLY_POLICY_ASSIGNMENTS_V25,
+                      'lan_policy_relocation_v28': LAN_POLICY_RELOCATION_V28,
+                      'lan_policy_reconfirm_v29': LAN_POLICY_RECONFIRM_V29,
+                      'lan_faith_purchases_v30': LAN_FAITH_PURCHASES_V30,
+                      'lan_city_controls_v30': LAN_CITY_CONTROLS_V30,
+                      'lan_player_only_city_controls_v30_from_v24': LAN_PLAYER_ONLY_CITY_CONTROLS_V30_FROM_V24,
+                      'lan_asymmetric_city_controls_v30_from_v24': LAN_ASYMMETRIC_CITY_CONTROLS_V30_FROM_V24,
+                      'lan_public_display_v30': LAN_PUBLIC_DISPLAY_V30,
+                      'lan_player_only_public_display_v30_from_v24': LAN_PLAYER_ONLY_PUBLIC_DISPLAY_V30_FROM_V24,
+                      'lan_asymmetric_public_display_v30_from_v24': LAN_ASYMMETRIC_PUBLIC_DISPLAY_V30_FROM_V24,
+                      'lan_player_only_policy_reconfirm_v29': LAN_PLAYER_ONLY_POLICY_RECONFIRM_V29,
+                      'lan_policy_reconfirm_v29_from_v24': LAN_POLICY_RECONFIRM_V29_FROM_V24,
+                      'lan_joint_policy_learner_v29': LAN_JOINT_POLICY_LEARNER_V29,
+                      'lan_player_only_joint_policy_learner_v29_from_v24': LAN_PLAYER_ONLY_JOINT_POLICY_LEARNER_V29_FROM_V24,
+                      'lan_joint_policy_learner_v29_from_v24': LAN_JOINT_POLICY_LEARNER_V29_FROM_V24,
+                      'lan_bounded_episode_v29': LAN_BOUNDED_EPISODE_V29,
                       CAMPAIGN_ORIGIN_REATTACH_V1_ID: CAMPAIGN_ORIGIN_REATTACH_V1,
                       COMPLETED_CAMPAIGN_SUCCESSOR_V1_ID: COMPLETED_CAMPAIGN_SUCCESSOR_V1}
 IMPLEMENTATION = ('artifacts.py','encoding.py','model.py','policy_assignments.py',
@@ -92,7 +300,8 @@ IMPLEMENTATION = ('artifacts.py','encoding.py','model.py','policy_assignments.py
                   'action_bindings.py','action_content.py','campaign.py')
 IMPLEMENTATION = IMPLEMENTATION + ('movement_information.py','civ6rl/native_movement_preview.py','world_input.py',
                                   'war_confirmation13.py','resource_quantity14.py')
-IMPLEMENTATION = IMPLEMENTATION + ('public_purchases.py',)
+IMPLEMENTATION = IMPLEMENTATION + ('public_purchases.py','lan_inputs.py','lan_rollout.py','lan_critic.py')
+IMPLEMENTATION = IMPLEMENTATION + ('governors.py','migrate_actor.py')
 
 
 def _pinned_v14_parent_sources():
@@ -214,6 +423,49 @@ def _migrate_v14_actor_and_optimizer(model, vocabulary, optimizer_state, *, sour
         campaign_receipts_migrated=False,
     )
     return target, mapped_optimizer, receipt
+
+
+def _migrate_v15_actor_and_optimizer(model, original_vocabulary, vocabulary, optimizer_state,
+                                     *, source_learner_sha256, max_step=64):
+    """Adapt public input columns/tokens and Adam at an empty V15 boundary."""
+    from .migrate_actor import migrate_v15_model, migrate_v15_parameter_tensor
+    from .artifacts import policy_version
+    _validate_optimizer(model, optimizer_state, max_step=max_step)
+    target, mapping_report = migrate_v15_model(model, original_vocabulary, vocabulary)
+    old_names = [name for name, _ in model.named_parameters()]
+    new_names = [name for name, _ in target.named_parameters()]
+    if old_names != new_names:
+        raise ValueError('Governor input migration changed actor parameter identities')
+    old_parameters, new_parameters = dict(model.named_parameters()), dict(target.named_parameters())
+    mappings = mapping_report['parameter_mappings']
+    if not set(mappings) <= set(old_names):
+        raise ValueError('Unknown parameter in governor input migration')
+    result = _cpu_copy(optimizer_state)
+    for parameter_id, state in result['state'].items():
+        name = old_names[parameter_id]
+        old, new = old_parameters[name], new_parameters[name]
+        for moment in ('exp_avg', 'exp_avg_sq'):
+            if state[moment].shape != old.shape:
+                raise ValueError('Source governor Adam moment shape differs')
+            state[moment] = migrate_v15_parameter_tensor(
+                state[moment], tuple(new.shape), mappings.get(name))
+    _validate_optimizer(target, result, max_step=max_step)
+    receipt = dict(schema='civ6rl.actor_schema_migration.v1', id=PUBLIC_GOVERNORS_V16,
+        source_learner_sha256=source_learner_sha256,
+        source_policy_sha256=policy_version(model, original_vocabulary),
+        target_policy_sha256=policy_version(target, vocabulary),
+        source_actor_schema='civ6rl.recurrent_policy.v15',
+        target_actor_schema='civ6rl.recurrent_policy.v16',
+        source_vocabulary_sha256=original_vocabulary.fingerprint,
+        target_vocabulary_sha256=vocabulary.fingerprint,
+        input_mapping=mapping_report,
+        preserved=dict(cnn=True, lstm=True, hidden_width=True, named_parent_columns=True,
+            actor_optimizer_by_parameter_name=True, critic=True, critic_optimizer=True,
+            rng=True, update_count=True, closed_episode_ledger=True,
+            last_update_context=True, collector_empty=True),
+        retained_trajectories_reusable=False, campaign_receipts_migrated=False,
+        forward_semantics='New public governor entities and candidates may change logits; old trajectories are not V16 on-policy samples.')
+    return target, result, receipt
 
 
 def implementation_hashes():
@@ -411,9 +663,13 @@ def _validate_update_context(context, critic_mode='player_only'):
         extra = set()
     else:
         raise ValueError('invalid critic mode in learner provenance')
-    if type(context) is not dict or set(context) not in (base | extra,base | extra | {'multiplayer'}):
+    if type(context) is not dict or set(context) not in (base | extra,base | extra | {'multiplayer'},
+                                                       base | extra | {'lan_collection'}):
         raise ValueError('invalid learner update provenance')
     decision_limit=12
+    if 'lan_collection' in context:
+        from .diagnostic_budget998 import validate_collection
+        decision_limit=validate_collection(context['lan_collection'])['max_decisions']
     if 'multiplayer' in context:
         multiplayer=context['multiplayer']
         multiplayer_fields={'schema','global_decisions','player_ids','diagnostic_collection'}
@@ -554,6 +810,7 @@ def training_bytes(runtime):
 def load_training_bytes(data,*,sha256,device='cpu',expected_vocabulary_fingerprint=None,
                         implementation_migration=None,max_completed_updates=4,campaign_contract=None,
                         candidate_family_prior=None,actor_schema_migration=None,source_restore=None,
+                        target_vocabulary=None,
                         campaign_succession=False):
     if type(data) is not bytes or not 0<len(data)<=MAX_BYTES or hashlib.sha256(data).hexdigest()!=sha256:
         raise ValueError('learner snapshot size or digest differs')
@@ -569,16 +826,22 @@ def load_training_bytes(data,*,sha256,device='cpu',expected_vocabulary_fingerpri
         raise ValueError('unknown learner implementation migration')
     if candidate_family_prior not in (None, 'inverse_legal_candidate_count_v1'):
         raise ValueError('unknown candidate family prior')
-    if actor_schema_migration not in (None, PUBLIC_PURCHASE_OBSERVATION_V15):
+    if actor_schema_migration not in (None, PUBLIC_PURCHASE_OBSERVATION_V15, PUBLIC_GOVERNORS_V16):
         raise ValueError('unknown actor schema migration')
     if source_restore not in (None, V14_PARENT_SOURCE_RESTORE):
         raise ValueError('unknown learner source restore')
     if type(campaign_succession) is not bool:
         raise ValueError('campaign succession selection must be explicit boolean')
-    if ((actor_schema_migration is not None or source_restore is not None)
+    if ((actor_schema_migration == PUBLIC_PURCHASE_OBSERVATION_V15 or source_restore is not None)
             and (implementation_migration is not None or candidate_family_prior is not None
                  or campaign_contract is not None or campaign_succession)):
         raise ValueError('V14 parent restore/migration cannot combine with other migrations or campaigns')
+    if actor_schema_migration == PUBLIC_GOVERNORS_V16:
+        from .encoding import ContentVocabulary
+        if type(target_vocabulary) is not ContentVocabulary or campaign_contract is not None or campaign_succession:
+            raise ValueError('Governor input migration needs an explicit frozen target vocabulary and no campaign')
+    elif target_vocabulary is not None:
+        raise ValueError('A target vocabulary requires the explicit governor input migration')
     if actor_schema_migration is not None and source_restore is not None:
         raise ValueError('V14 actor migration and source-only restore are mutually exclusive')
     if candidate_family_prior is not None and implementation_migration != 'candidate_family_prior_reconfiguration_v1':
@@ -630,7 +893,7 @@ def load_training_bytes(data,*,sha256,device='cpu',expected_vocabulary_fingerpri
             raise ValueError('campaign origin learner digest differs')
         current_sources=implementation_hashes()
         migration=None
-        parent_source_migration = actor_schema_migration is not None or source_restore is not None
+        parent_source_migration = actor_schema_migration == PUBLIC_PURCHASE_OBSERVATION_V15 or source_restore is not None
         if parent_source_migration:
             parent_sources = _pinned_v14_parent_sources()
             if (payload['schema'] != SCHEMA or payload['implementation_sha256'] != parent_sources
@@ -717,7 +980,8 @@ def load_training_bytes(data,*,sha256,device='cpu',expected_vocabulary_fingerpri
         _validate_update_context(context, critic_mode=critic_mode)
         _validate_rng(payload['rng'],device)
         model,vocabulary=load_policy_bytes(payload['policy'],sha256=payload['policy_sha256'],device=device)
-        if expected_vocabulary_fingerprint is not None and vocabulary.fingerprint!=expected_vocabulary_fingerprint:
+        expected_vocabulary = (target_vocabulary if actor_schema_migration == PUBLIC_GOVERNORS_V16 else vocabulary)
+        if expected_vocabulary_fingerprint is not None and expected_vocabulary.fingerprint!=expected_vocabulary_fingerprint:
             raise ValueError('resume vocabulary differs')
         if payload['optimizer_parameter_names'] != [name for name,_ in model.named_parameters()]:
             raise ValueError('optimizer parameter names differ')
@@ -726,7 +990,14 @@ def load_training_bytes(data,*,sha256,device='cpu',expected_vocabulary_fingerpri
             raise ValueError('restored learner policy identity differs')
         actor_migration_receipt=None
         actor_optimizer_state=payload['optimizer']
-        if actor_schema_migration is not None:
+        if actor_schema_migration == PUBLIC_GOVERNORS_V16:
+            if payload['schema'] != SCHEMA or campaign_state is not None:
+                raise ValueError('Governor input migration requires an uncampaigned completed learner boundary')
+            model,actor_optimizer_state,actor_migration_receipt = _migrate_v15_actor_and_optimizer(
+                model,vocabulary,target_vocabulary,actor_optimizer_state,
+                source_learner_sha256=sha256,max_step=adam_max)
+            vocabulary=target_vocabulary
+        elif actor_schema_migration is not None:
             if payload['schema'] != SCHEMA or campaign_state is not None:
                 raise ValueError('public purchase actor migration requires an uncampaigned learner boundary')
             model,actor_optimizer_state,actor_migration_receipt = _migrate_v14_actor_and_optimizer(

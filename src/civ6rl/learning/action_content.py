@@ -22,6 +22,9 @@ TABLE_KEYS = {
     "Beliefs": "BeliefType",
 }
 TYPE_RE = re.compile(r"[A-Z][A-Z0-9_]{0,127}\Z")
+# The official Types table includes a named lake with a trailing space.
+# Preserve that key verbatim. Selected action-table identifiers stay strict.
+DATABASE_TYPE_RE = re.compile(r"[A-Z][A-Z0-9_]{0,127} ?\Z")
 BELIEF_CLASS_RE = re.compile(r"BELIEF_CLASS_[A-Z0-9_]{1,120}\Z")
 MAX_DATABASE_BYTES = 1_073_741_824
 MAX_ROWS_PER_TABLE = 100_000
@@ -59,7 +62,8 @@ def _require_no_sidecars(db_path: Path) -> None:
         raise ActionContentCatalogError("public gameplay database has mutable SQLite sidecars")
 
 
-def extract_action_content_catalog(path: str | Path, *, expected_sha256: str) -> dict[str, Any]:
+def extract_action_content_catalog(path: str | Path, *, expected_sha256: str,
+                                   gameinfo_evidence_path: str | Path | None = None) -> dict[str, Any]:
     """Extract public GameInfo identities from an explicit, SHA-pinned DB.
 
     GameInfo indices are zero-based ordinals from ``ORDER BY rowid``. The
@@ -71,7 +75,9 @@ def extract_action_content_catalog(path: str | Path, *, expected_sha256: str) ->
     if not db_path.is_file() or db_path.stat().st_size > MAX_DATABASE_BYTES:
         raise ActionContentCatalogError("public gameplay database missing or over size bound")
     _require_no_sidecars(db_path)
-    evidence_before = _sha256(GAMEINFO_EVIDENCE_PATH)
+    evidence_path = (GAMEINFO_EVIDENCE_PATH if gameinfo_evidence_path is None
+                     else Path(gameinfo_evidence_path)).resolve(strict=True)
+    evidence_before = _sha256(evidence_path)
     if evidence_before != GAMEINFO_EVIDENCE_SHA256:
         raise ActionContentCatalogError("pinned GameInfo ordering evidence changed")
     before = _sha256(db_path)
@@ -95,7 +101,7 @@ def extract_action_content_catalog(path: str | Path, *, expected_sha256: str) ->
                 raise ActionContentCatalogError("Types row count outside its bound")
             hashes = {}
             for type_name, raw_hash in db.execute('SELECT "Type","Hash" FROM "Types"'):
-                if (type(type_name) is not str or TYPE_RE.fullmatch(type_name) is None
+                if (type(type_name) is not str or DATABASE_TYPE_RE.fullmatch(type_name) is None
                         or type(raw_hash) is not int
                         or not -(1 << 31) <= raw_hash <= 0xFFFFFFFF or type_name in hashes):
                     raise ActionContentCatalogError("invalid or duplicate Types row")
@@ -143,7 +149,7 @@ def extract_action_content_catalog(path: str | Path, *, expected_sha256: str) ->
     if _sha256(db_path) != before:
         raise ActionContentCatalogError("public gameplay database changed during extraction")
     _require_no_sidecars(db_path)
-    if _sha256(GAMEINFO_EVIDENCE_PATH) != evidence_before:
+    if _sha256(evidence_path) != evidence_before:
         raise ActionContentCatalogError("GameInfo ordering evidence changed during extraction")
     return result
 

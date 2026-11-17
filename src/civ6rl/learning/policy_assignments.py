@@ -17,7 +17,7 @@ MAX_EDGE_SCANS = 2_000_000
 # A complete policy assignment decoder does not make the native action space
 # complete; all other native gaps remain outside this isolated helper.
 COMPLETE_ACTION_SPACE = False
-_POLICY_TYPE = re.compile(r"POLICY_[A-Z0-9_]+\Z")
+_POLICY_TYPE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 
 
 class PolicyAssignmentLimitError(RuntimeError):
@@ -77,10 +77,6 @@ def _validate_slots(slots: list[dict]) -> list[dict]:
             relations += 1
             if relations > MAX_POLICY_RELATIONS:
                 raise PolicyAssignmentLimitError("native policy relation bound exceeded")
-    for row in slots:
-        if any(option["index"] in prior_indices and option["index"] != row["prior_index"]
-               for option in row["options"]):
-            raise ValueError("active policy relocation is outside this adapter")
     return slots
 
 
@@ -149,7 +145,7 @@ def _has_changed_completion(slots: list[dict], remaining: list[int], unavailable
     return False
 
 
-def valid_next_hashes(slots: list[dict], prefix: list[int]) -> list[int]:
+def valid_next_hashes(slots: list[dict], prefix: list[int], *, allow_unchanged: bool = False) -> list[int]:
     """Return every next-slot public hash with a unique changed completion.
 
     ``prefix`` is a dense sequence of unsigned public hashes, one for each
@@ -157,6 +153,8 @@ def valid_next_hashes(slots: list[dict], prefix: list[int]) -> list[int]:
     ``ValueError``. A syntactically valid dead-end prefix returns an empty
     mask. A valid complete assignment has no next choice and returns ``[]``.
     """
+    if type(allow_unchanged) is not bool:
+        raise ValueError("allow_unchanged must be bool")
     _validate_slots(slots)
     if type(prefix) is not list or len(prefix) > len(slots):
         raise ValueError("policy prefix must be a dense bounded list")
@@ -177,7 +175,7 @@ def valid_next_hashes(slots: list[dict], prefix: list[int]) -> list[int]:
     if not slots:
         return []
     if len(prefix) == len(slots):
-        if not changed:
+        if not changed and not allow_unchanged:
             raise ValueError("complete policy prefix is unchanged")
         return []
 
@@ -191,18 +189,21 @@ def valid_next_hashes(slots: list[dict], prefix: list[int]) -> list[int]:
             continue
         next_used = used | {public_hash}
         next_changed = changed or option["index"] != slots[next_slot]["prior_index"]
-        if _has_changed_completion(slots, suffix, next_used, next_changed, budget):
+        if ((allow_unchanged and _perfect_matching(slots, suffix, next_used, budget) is not None)
+                or (not allow_unchanged and _has_changed_completion(slots, suffix, next_used, next_changed, budget))):
             legal.append(public_hash)
     return legal
 
 
-def validate_joint_assignment(slots: list[dict], assignments: list[int]) -> dict:
+def validate_joint_assignment(slots: list[dict], assignments: list[int], *, allow_unchanged: bool = False) -> dict:
     """Validate a complete assignment and separate content hashes from submit hashes.
 
     Public ``hash`` values determine menu membership and uniqueness. Returned
     ``native_hashes`` preserve the catalogue's signed/unsigned engine numeric
     representation exclusively for the native submission boundary.
     """
+    if type(allow_unchanged) is not bool:
+        raise ValueError("allow_unchanged must be bool")
     _validate_slots(slots)
     if (not slots or type(assignments) is not list or len(assignments) != len(slots)
             or any(not _int(value, 0, 0xffffffff) for value in assignments)):
@@ -216,7 +217,7 @@ def validate_joint_assignment(slots: list[dict], assignments: list[int]) -> dict
         if len(matches) != 1:
             raise ValueError("policy assignment is absent from its slot menu")
         selected.append(matches[0])
-    if all(option["index"] == slots[i]["prior_index"] for i, option in enumerate(selected)):
+    if not allow_unchanged and all(option["index"] == slots[i]["prior_index"] for i, option in enumerate(selected)):
         raise ValueError("policy assignment is unchanged")
     return {
         "policy_indices": [option["index"] for option in selected],
